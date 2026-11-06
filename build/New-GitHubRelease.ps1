@@ -48,25 +48,39 @@ $notes = if ($log.Count) { "## 변경 사항`n`n" + ($log -join "`n") } else { '
 if ($Footer) { $notes += "`n`n$Footer" }
 
 # 릴리스 파일 올리기. Windows PowerShell 5.1 의 Invoke-RestMethod 는 github.com 에 큰 파일(수십 MB)을 올리다
-# "The underlying connection was closed" 로 끊기므로 Windows 에 들어 있는 curl.exe 로 (재시도 포함) 올림.
-# 토큰은 명령줄에 보이지 않게 임시 헤더 파일로 넘기고 바로 지움. curl 이 없으면 Invoke-RestMethod.
-function Send-ReleaseAsset([string]$UploadBase, [string]$File, [string]$ContentType, [string]$Name = '') {
+# "The underlying connection was closed" 로 끊기므로 Windows 에 들어 있는 curl.exe 로 올림 (없으면 Invoke-RestMethod).
+# 업로드 서버가 가끔 502 를 주므로 4번까지 다시 시도하고, 그 전에 실패한 시도가 남긴 같은 이름의 파일을 지움.
+# 토큰은 명령줄에 보이지 않게 임시 헤더 파일로 넘기고 바로 지움.
+function Send-ReleaseAsset($Release, [string]$File, [string]$ContentType, [string]$Name = '') {
     if (-not $Name) { $Name = [IO.Path]::GetFileName($File) }
-    $uri = "$($UploadBase)?name=$([Uri]::EscapeDataString($Name))"
-    Write-Host ("Uploading {0} ({1:N1} MB)" -f $Name, ((Get-Item -LiteralPath $File).Length / 1MB))
+    $uri = "$($Release.upload_url -replace '\{.*\}', '')?name=$([Uri]::EscapeDataString($Name))"
     $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
-    if (-not $curl) {
-        Invoke-RestMethod -UseBasicParsing -TimeoutSec 900 -Method Post -Uri $uri -Headers $headers -ContentType $ContentType -InFile $File | Out-Null
-        return
+    for ($attempt = 1; ; $attempt++) {
+        Write-Host ("Uploading {0} ({1:N1} MB){2}" -f $Name, ((Get-Item -LiteralPath $File).Length / 1MB), $(if ($attempt -gt 1) { " - attempt $attempt" } else { '' }))
+        $assets = Invoke-RestMethod -UseBasicParsing -Uri "$($Release.url)/assets?per_page=100" -Headers $headers
+        foreach ($leftover in $assets) {
+            if ($leftover.name -eq $Name) { Invoke-RestMethod -UseBasicParsing -Method Delete -Uri $leftover.url -Headers $headers | Out-Null }
+        }
+        try {
+            if (-not $curl) {
+                Invoke-RestMethod -UseBasicParsing -TimeoutSec 900 -Method Post -Uri $uri -Headers $headers -ContentType $ContentType -InFile $File | Out-Null
+                return
+            }
+            $headerFile = [IO.Path]::GetTempFileName()
+            try {
+                [IO.File]::WriteAllText($headerFile, "Authorization: Bearer $env:GH_TOKEN`r`nAccept: application/vnd.github+json`r`nContent-Type: $ContentType`r`nExpect:`r`n")
+                $output = & $curl.Source --silent --show-error --fail --http1.1 --max-time 1200 -X POST -H "@$headerFile" --data-binary "@$File" $uri 2>&1
+                if ($LASTEXITCODE -eq 0) { return }
+                throw "curl exit $LASTEXITCODE`: $((($output | Out-String).Trim()))"
+            }
+            finally { Remove-Item -LiteralPath $headerFile -Force -ErrorAction SilentlyContinue }
+        }
+        catch {
+            if ($attempt -ge 4) { throw "Uploading $Name failed: $($_.Exception.Message)" }
+            Write-Host "  upload failed ($($_.Exception.Message)); retrying in $(15 * $attempt) s"
+            Start-Sleep -Seconds (15 * $attempt)
+        }
     }
-    $headerFile = [IO.Path]::GetTempFileName()
-    try {
-        [IO.File]::WriteAllText($headerFile, "Authorization: Bearer $env:GH_TOKEN`r`nAccept: application/vnd.github+json`r`nContent-Type: $ContentType`r`nExpect:`r`n")
-        $output = & $curl.Source --silent --show-error --fail --http1.1 --retry 3 --retry-delay 5 --retry-all-errors --max-time 1200 `
-            -X POST -H "@$headerFile" --data-binary "@$File" $uri 2>&1
-        if ($LASTEXITCODE -ne 0) { throw "Uploading $Name failed (curl exit $LASTEXITCODE): $((($output | Out-String).Trim()))" }
-    }
-    finally { Remove-Item -LiteralPath $headerFile -Force -ErrorAction SilentlyContinue }
 }
 
 $release = Send-Json Post "$api/releases" @{
@@ -77,7 +91,7 @@ try {
     $upload = $release.upload_url -replace '\{.*\}', ''
     foreach ($file in $files) {
         $type = if ($file -like '*.zip') { 'application/zip' } else { 'application/octet-stream' }
-        Send-ReleaseAsset $upload $file $type
+        Send-ReleaseAsset $release $file $type
     }
     $published = Send-Json Patch $release.url @{ draft = $false }
 }
