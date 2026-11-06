@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="obsidian" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#20201E"/>
+      <stop offset="0.45" stop-color="#10100F"/>
+      <stop offset="1" stop-color="#070807"/>
+    </linearGradient>
+    <linearGradient id="champagne" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#B9965C"/>
+      <stop offset="0.22" stop-color="#F5E6BF"/>
+      <stop offset="0.46" stop-color="#D8BB82"/>
+      <stop offset="0.53" stop-color="#B38E52"/>
+      <stop offset="0.60" stop-color="#EAD29D"/>
+      <stop offset="1" stop-color="#B9965C"/>
+    </linearGradient>
+    <linearGradient id="prompt" gradientUnits="userSpaceOnUse" x1="0" y1="64" x2="0" y2="192">
+      <stop offset="0" stop-color="#FFF0CE"/>
+      <stop offset="0.44" stop-color="#E5CCA0"/>
+      <stop offset="0.52" stop-color="#C5A16A"/>
+      <stop offset="0.61" stop-color="#F3DDB1"/>
+      <stop offset="1" stop-color="#D8B77E"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="52" fill="url(#obsidian)"/>
+  <rect x="12" y="12" width="232" height="232" rx="48" fill="none" stroke="url(#champagne)" stroke-width="4"/>
+  <path d="M65 83l44 45-44 45m77 0h49" fill="none" stroke="url(#prompt)" stroke-width="20" stroke-linecap="square" stroke-linejoin="miter"/>
+</svg>

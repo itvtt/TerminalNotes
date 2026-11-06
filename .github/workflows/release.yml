@@ -1,0 +1,90 @@
+# Terminal Notes release: a self-hosted Windows runner builds every push to main, picks the next version,
+# and publishes a GitHub Release with two assets:
+#   TerminalNotes-Setup.exe   users install once with this (per user, no admin rights)
+#   TerminalNotes-win-x64.zip the installed app checks the latest release at startup (UPDATE_* in .env)
+#                             and updates itself from this zip
+#
+# The build is build\Publish-Release.ps1: it needs only the .NET 10 SDK on the runner (no NuGet download,
+# no extra actions besides checkout) and runs in Windows PowerShell 5.1.
+#
+# Setup (once, in the repository settings):
+#   - Secret TERMINALNOTES_ENV: the full contents of your .env (RELAY_* and UPDATE_* lines).
+#     Alternatively keep a .env on the runner machine and set the runner env var TERMINALNOTES_ENV_PATH.
+#   - The runner needs the .NET 10 SDK and the labels: self-hosted, windows.
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['docs/**', '**.md', 'tests/**', 'relay/**']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: terminalnotes-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: [self-hosted, windows]
+    timeout-minutes: 30
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      DOTNET_NOLOGO: '1'
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore .env
+        shell: powershell
+        env:
+          TN_ENV: ${{ secrets.TERMINALNOTES_ENV }}
+        run: |
+          if ($env:TN_ENV) { [IO.File]::WriteAllText("$PWD\.env", $env:TN_ENV, (New-Object Text.UTF8Encoding($false))) }
+          elseif ($env:TERMINALNOTES_ENV_PATH -and (Test-Path $env:TERMINALNOTES_ENV_PATH)) { Copy-Item $env:TERMINALNOTES_ENV_PATH .env -Force }
+          else { Write-Host "::warning::.env not provided; no problem reports, default account lists, and updates check this repository without UPDATE_TOKEN." }
+
+      - name: Pick version
+        id: version
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          [xml]$project = Get-Content TerminalNotes.csproj -Encoding UTF8
+          $base = [version](@($project.Project.PropertyGroup.Version) | Where-Object { $_ } | Select-Object -First 1)
+          $latest = $null
+          try {
+            $release = Invoke-RestMethod -UseBasicParsing -Uri "${{ github.api_url }}/repos/${{ github.repository }}/releases/latest" `
+              -Headers @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json' }
+            $latest = [version]($release.tag_name.TrimStart('v', 'V'))
+          } catch { Write-Host "No previous release." }
+          # Never go backwards: the csproj version is the floor, otherwise one past the latest release.
+          if ($latest -and $latest -ge $base) { $next = [version]::new($latest.Major, $latest.Minor, $latest.Build + 1) } else { $next = [version]::new($base.Major, $base.Minor, [Math]::Max(0, $base.Build)) }
+          Write-Host "Version $next"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "version=$next" -Encoding ASCII
+
+      - name: Build
+        id: build
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File build\Publish-Release.ps1 -Version ${{ steps.version.outputs.version }}
+
+      - name: Create release
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          $version = "${{ steps.version.outputs.version }}"
+          $zip = "${{ steps.build.outputs.zip }}"
+          $setup = "${{ steps.build.outputs.setup }}"
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json' }
+          $body = @{ tag_name = "v$version"; target_commitish = "${{ github.sha }}"; name = "Terminal Notes v$version"; body = "Automated build from ${{ github.sha }}"; draft = $false; prerelease = $false } | ConvertTo-Json
+          $release = Invoke-RestMethod -UseBasicParsing -Method Post -Uri "${{ github.api_url }}/repos/${{ github.repository }}/releases" -Headers $headers -Body ([Text.Encoding]::UTF8.GetBytes($body)) -ContentType 'application/json; charset=utf-8'
+          $upload = $release.upload_url -replace '\{.*\}', ''
+          Invoke-RestMethod -UseBasicParsing -Method Post -Uri "$($upload)?name=TerminalNotes-win-x64.zip" -Headers $headers -ContentType 'application/zip' -InFile $zip | Out-Null
+          Invoke-RestMethod -UseBasicParsing -Method Post -Uri "$($upload)?name=TerminalNotes-Setup.exe" -Headers $headers -ContentType 'application/octet-stream' -InFile $setup | Out-Null
+          Write-Host "Released v$version"
+

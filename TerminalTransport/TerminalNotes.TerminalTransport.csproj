@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>12.0</LangVersion>
+    <DefineConstants>$(DefineConstants);TN_TRANSPORT</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../Runtime.cs" Link="Runtime.cs" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>7.8.9.10</FileVersion>
+    <DefineConstants>$(DefineConstants);TN_SOURCE_SERVICES_DIAGNOSTICLOGANALYZER_CS</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../ApplicationDiagnostics.cs" Link="ApplicationDiagnostics.cs" />
+    <Compile Include="../../Services.cs" Link="Services.cs" />
+  </ItemGroup>
+</Project>

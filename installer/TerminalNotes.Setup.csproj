@@ -1,0 +1,55 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- TerminalNotes-Setup.exe: the release zip (and, for PCs without .NET 10, the .NET 10 runtime) embedded in a small
+       per-user installer. It targets the .NET Framework 4.8 built into Windows 10/11, so it starts on PCs without .NET 10.
+       Built by build\Publish-Release.ps1 with -p:PayloadZip=<release zip> -p:RuntimeDirectory=<runtime> -p:UninstallerExe=<exe>;
+       needs only the .NET 10 SDK: it compiles against the framework in %WINDIR% (no reference-assembly pack, no NuGet). -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <PlatformTarget>x64</PlatformTarget>
+    <AutomaticallyUseReferenceAssemblyPackages>false</AutomaticallyUseReferenceAssemblyPackages>
+    <FrameworkPathOverride>$(WINDIR)\Microsoft.NET\Framework64\v4.0.30319</FrameworkPathOverride>
+    <AssemblyName>TerminalNotes-Setup</AssemblyName>
+    <RootNamespace>TerminalNotes.Setup</RootNamespace>
+    <ApplicationIcon>..\Assets\AppIcon.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Version>1.0.0</Version>
+    <Product>Terminal Notes</Product>
+    <Description>Terminal Notes 설치</Description>
+    <DebugType Condition="'$(Configuration)' == 'Release'">none</DebugType>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.IO.Compression.FileSystem" />
+    <Reference Include="Microsoft.CSharp" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(PayloadZip)' != ''">
+    <EmbeddedResource Include="$(PayloadZip)" LogicalName="payload.zip" />
+  </ItemGroup>
+  <!-- -p:RuntimeDirectory=<folder laid out like a dotnet root> zips it (MSBuild ZipDirectory, '/' paths) and embeds it. -->
+  <Target Name="PackRuntime" BeforeTargets="AssignTargetPaths" Condition="'$(RuntimeDirectory)' != ''">
+    <Error Condition="!Exists('$(RuntimeDirectory)\host\fxr')" Text="RuntimeDirectory must contain host\fxr and shared\ (a dotnet root): $(RuntimeDirectory)" />
+    <ZipDirectory SourceDirectory="$(RuntimeDirectory)" DestinationFile="$(IntermediateOutputPath)runtime.zip" Overwrite="true" />
+    <ItemGroup>
+      <EmbeddedResource Include="$(IntermediateOutputPath)runtime.zip" LogicalName="runtime.zip" />
+      <FileWrites Include="$(IntermediateOutputPath)runtime.zip" />
+    </ItemGroup>
+  </Target>
+  <ItemGroup Condition="'$(UninstallerExe)' != ''">
+    <EmbeddedResource Include="$(UninstallerExe)" LogicalName="uninstall.exe" />
+  </ItemGroup>
+
+  <!-- -p:BuildUninstaller=true builds the same program without payloads: the small uninstall.exe the Setup places. -->
+  <Target Name="RequirePayload" BeforeTargets="Build" Condition="'$(BuildUninstaller)' != 'true' And ('$(PayloadZip)' == '' Or !Exists('$(PayloadZip)'))">
+    <Error Text="PayloadZip must point to the release zip (TerminalNotes-win-x64.zip). Build through build\Publish-Release.ps1." />
+  </Target>
+
+</Project>

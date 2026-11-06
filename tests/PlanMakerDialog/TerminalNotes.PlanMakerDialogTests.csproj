@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <PlatformTarget>x64</PlatformTarget>
+    <ILuncherIntegrated>false</ILuncherIntegrated>
+    <DefineConstants>$(DefineConstants);TN_SOURCE_SERVICES_LOOPAUTORECOMMANDUSERS_CS;TN_SOURCE_PLANMAKERDIALOG_CS;TN_SOURCE_GLOBALAGENTINSTRUCTIONSDIALOG_XAML_CS;TN_SOURCE_SERVICES_PLANMAKERWORKFLOW_CS;TN_SOURCE_SERVICES_PLANMAKERINSTRUCTIONS_CS;TN_SOURCE_SERVICES_GLOBALAGENTINSTRUCTIONS_CS;TN_SOURCE_SERVICES_OPENCODEPROJECTCONTEXT_CS</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../Runtime.cs" Link="Runtime.cs" />
+    <Compile Include="../../StatusNotificationWindow.cs" Link="StatusNotificationWindow.cs" />
+    <Compile Include="../../AppMessageDialog.cs" Link="AppMessageDialog.cs" />
+    <Compile Include="../../Services.cs" Link="Services.cs" />
+    <Page Include="../../GlobalAgentInstructionsDialog.xaml" Link="GlobalAgentInstructionsDialog.xaml" />
+    <Resource Include="../../Assets/AppIcon.ico" Link="Assets/AppIcon.ico" />
+    <None Include="../../MainWindow.xaml" Link="MainWindow.xaml" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../TerminalProfilesDialog.xaml" Link="TerminalProfilesDialog.xaml" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

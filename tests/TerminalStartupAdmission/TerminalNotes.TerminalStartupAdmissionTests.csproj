@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType><TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings><PlatformTarget>x64</PlatformTarget>
+    <DefineConstants>$(DefineConstants);TN_SOURCE_SERVICES_TERMINALRESOURCEPRESSURE_CS;TN_SOURCE_SERVICES_TERMINALSTARTUPADMISSION_CS;TN_SOURCE_SERVICES_TERMINALEXECUTIONTIMING_CS;TN_SOURCE_TERMINALPANE_RESOURCEADMISSION_CS</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../Services.cs" Link="Services.cs" />
+
+    <Compile Include="../../TerminalPane.cs" Link="TerminalPane.cs" />
+  </ItemGroup>
+</Project>

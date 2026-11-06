@@ -1,0 +1,89 @@
+<Project>
+  <Import Project="$(MSBuildThisFileDirectory)..\..\..\Directory.Build.targets" Condition="Exists('$(MSBuildThisFileDirectory)..\..\..\Directory.Build.targets')" />
+
+  <!-- The app keeps its third-party assemblies in lib\ (no NuGet packages); tests that use them get the same files. -->
+  <ItemGroup Condition="$(TargetFramework.Contains('-windows'))">
+    <Reference Include="Markdig" HintPath="$(MSBuildThisFileDirectory)..\lib\Markdig.dll" />
+    <Reference Include="Microsoft.Web.WebView2.Core" HintPath="$(MSBuildThisFileDirectory)..\lib\Microsoft.Web.WebView2.Core.dll" />
+    <Reference Include="Microsoft.Web.WebView2.WinForms" HintPath="$(MSBuildThisFileDirectory)..\lib\Microsoft.Web.WebView2.WinForms.dll" />
+    <Reference Include="Microsoft.Web.WebView2.Wpf" HintPath="$(MSBuildThisFileDirectory)..\lib\Microsoft.Web.WebView2.Wpf.dll" />
+    <None Include="$(MSBuildThisFileDirectory)..\lib\WebView2Loader.dll" Link="WebView2Loader.dll" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- Focused tests retain their original source dependency sets. Extract active regions
+       before compilation because disabled C# regions still parse Markdown # lines in
+       raw strings as preprocessor directives. Generated slices exist only under obj. -->
+  <UsingTask TaskName="ExtractTerminalNotesTestSources"
+             TaskFactory="RoslynCodeTaskFactory"
+             AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <Sources ParameterType="Microsoft.Build.Framework.ITaskItem[]" Required="true" />
+      <Symbols ParameterType="System.String" Required="true" />
+      <ProjectDirectory ParameterType="System.String" Required="true" />
+      <OutputDirectory ParameterType="System.String" Required="true" />
+      <GeneratedSources ParameterType="Microsoft.Build.Framework.ITaskItem[]" Output="true" />
+    </ParameterGroup>
+    <Task>
+      <Using Namespace="System" />
+      <Using Namespace="System.Collections.Generic" />
+      <Using Namespace="System.IO" />
+      <Using Namespace="System.Linq" />
+      <Using Namespace="System.Text" />
+      <Using Namespace="System.Text.RegularExpressions" />
+      <Code Type="Fragment" Language="cs"><![CDATA[
+        var selected = new HashSet<string>(Symbols.Split(';')
+            .Select(value => value.Trim())
+            .Where(value => value.StartsWith("TN_SOURCE_", StringComparison.Ordinal)), StringComparer.Ordinal);
+        var found = new HashSet<string>(StringComparer.Ordinal);
+        var generated = new List<Microsoft.Build.Framework.ITaskItem>();
+        string outputDirectory = Path.GetFullPath(Path.Combine(ProjectDirectory, OutputDirectory));
+        Directory.CreateDirectory(outputDirectory);
+        var region = new Regex(
+            @"^#if TN_(?:WPF|ENGINE|TRANSPORT|DESKTOP) \|\| (?<symbol>TN_SOURCE_[A-Z0-9_]+)\r?\n(?<section>#region [^\r\n]+\r?\n.*?^#endregion)\r?\n#endif\r?$",
+            RegexOptions.Multiline | RegexOptions.Singleline);
+        foreach (var source in Sources)
+        {
+            string sourcePath = source.GetMetadata("FullPath");
+            // Compile as ordinary source so the test project's nullable/analyzer settings
+            // remain the same as when these compilation units were linked directly.
+            var content = new StringBuilder("// Generated from the canonical TerminalNotes source for this focused test.\n");
+            int selectedCount = 0;
+            foreach (Match match in region.Matches(File.ReadAllText(sourcePath)))
+            {
+                string symbol = match.Groups["symbol"].Value;
+                if (!selected.Contains(symbol)) continue;
+                if (!found.Add(symbol)) throw new InvalidOperationException("Duplicate consolidated source selection: " + symbol);
+                content.Append(match.Groups["section"].Value).Append('\n');
+                selectedCount++;
+            }
+            if (selectedCount == 0) throw new InvalidOperationException("No selected source regions found in " + sourcePath);
+            string outputPath = Path.Combine(outputDirectory, Path.GetFileNameWithoutExtension(sourcePath) + ".selected.cs");
+            string text = content.ToString();
+            if (!File.Exists(outputPath) || File.ReadAllText(outputPath) != text)
+                File.WriteAllText(outputPath, text, new UTF8Encoding(false));
+            generated.Add(new Microsoft.Build.Utilities.TaskItem(outputPath));
+        }
+        if (!selected.SetEquals(found))
+            throw new InvalidOperationException("Missing consolidated source regions: " + string.Join(", ", selected.Except(found)));
+        GeneratedSources = generated.ToArray();
+      ]]></Code>
+    </Task>
+  </UsingTask>
+
+  <Target Name="PrepareTerminalNotesTestSources" BeforeTargets="CoreCompile">
+    <ItemGroup>
+      <_TerminalNotesConsolidatedSource Include="@(Compile)"
+          Condition="'%(Compile.Link)' == 'MainWindow.cs' Or '%(Compile.Link)' == 'TerminalPane.cs' Or '%(Compile.Link)' == 'Services.cs' Or '%(Compile.Link)' == 'Runtime.cs'" />
+    </ItemGroup>
+    <ExtractTerminalNotesTestSources Condition="'@(_TerminalNotesConsolidatedSource)' != ''"
+        Sources="@(_TerminalNotesConsolidatedSource)" Symbols="$(DefineConstants)"
+        ProjectDirectory="$(MSBuildProjectDirectory)" OutputDirectory="$(IntermediateOutputPath)ConsolidatedSources">
+      <Output TaskParameter="GeneratedSources" ItemName="_TerminalNotesSelectedSource" />
+    </ExtractTerminalNotesTestSources>
+    <ItemGroup Condition="'@(_TerminalNotesConsolidatedSource)' != ''">
+      <Compile Remove="@(_TerminalNotesConsolidatedSource)" />
+      <Compile Include="@(_TerminalNotesSelectedSource)" />
+      <FileWrites Include="@(_TerminalNotesSelectedSource)" />
+    </ItemGroup>
+  </Target>
+</Project>

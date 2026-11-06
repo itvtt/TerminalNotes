@@ -1,0 +1,186 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <PlatformTarget>x64</PlatformTarget>
+    <Version>1.1.2</Version>
+    <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
+    <DefaultItemExcludes>$(DefaultItemExcludes);relay\**;tests\**;artifacts\**;dist\**;TerminalEngine\**;TerminalTransport\**;TerminalDesktop\**;installer\**;out\**;build\**</DefaultItemExcludes>
+    <DefineConstants>$(DefineConstants);TN_WPF</DefineConstants>
+    <!-- On a PC without .NET 10, TerminalNotes-Setup.exe puts the runtime in <app>\dotnet. The published launcher looks
+         there first, then DOTNET_ROOT, then the installed .NET, so the same build runs on both kinds of PC. -->
+    <AppHostRelativeDotNet>dotnet</AppHostRelativeDotNet>
+    <AppHostDotNetSearch>AppRelative;EnvironmentVariable;Global</AppHostDotNetSearch>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="TerminalEngine\TerminalNotes.TerminalEngine.csproj" />
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
+
+  <!-- Third-party assemblies live in lib\ (see lib\README.md) so a build needs no package download. -->
+  <ItemGroup>
+    <Reference Include="Markdig" HintPath="lib\Markdig.dll" />
+    <Reference Include="Microsoft.Web.WebView2.Core" HintPath="lib\Microsoft.Web.WebView2.Core.dll" />
+    <Reference Include="Microsoft.Web.WebView2.WinForms" HintPath="lib\Microsoft.Web.WebView2.WinForms.dll" />
+    <Reference Include="Microsoft.Web.WebView2.Wpf" HintPath="lib\Microsoft.Web.WebView2.Wpf.dll" />
+    <None Include="lib\WebView2Loader.dll" Link="WebView2Loader.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <!-- Microsoft's current ConPTY (microsoft/terminal, MIT): Windows 10's inbox host drops Korean input through ConPTY. -->
+    <None Include="lib\conpty\conpty.dll" Link="conpty.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="lib\conpty\x64\OpenConsole.exe" Link="x64\OpenConsole.exe" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="lib\conpty\LICENSE.txt" Link="x64\OpenConsole-LICENSE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- Smaller release: no debug symbols or reference XML docs in the published folder. -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <DebugType>none</DebugType>
+    <PublishReferencesDocumentationFiles>false</PublishReferencesDocumentationFiles>
+    <SatelliteResourceLanguages>ko;en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Content Include="Assets\**\*" Exclude="Assets\AppIcon.ico;Assets\Fonts\**" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Resource Include="Assets\AppIcon.ico" />
+    <!-- Pretendard (SIL OFL 1.1, Assets\PRETENDARD-LICENSE.txt): static weights render crisply in WPF. -->
+    <Resource Include="Assets\Fonts\*.otf" />
+    <None Update="README.md" CopyToPublishDirectory="PreserveNewest" />
+    <!-- Only the current guide ships; the old guide and developer notes stay in the repository. -->
+    <None Update="docs\TerminalNotes-실습가이드.html;docs\interactive\**\*;docs\examples\**\*" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- dotnet publish -p:ReleaseZip=<path> also writes the release zip (used by build\Publish-Release.ps1). -->
+  <Target Name="PackReleaseZip" AfterTargets="Publish" Condition="'$(ReleaseZip)' != ''">
+    <ZipDirectory SourceDirectory="$(PublishDir)" DestinationFile="$(ReleaseZip)" Overwrite="true" />
+  </Target>
+
+  <!-- Problem reports, the skill store and shared announcements go to the relay (relay\relay.py). Its address and key come from .env;
+       only those two values are written to report-relay.json, never the admin password. -->
+  <Target Name="WriteReportRelayConfig" BeforeTargets="AssignTargetPaths">
+    <ReadLinesFromFile File="$(MSBuildProjectDirectory)\.env" Condition="Exists('$(MSBuildProjectDirectory)\.env')">
+      <Output TaskParameter="Lines" ItemName="_RelayEnvLine" />
+    </ReadLinesFromFile>
+    <ItemGroup>
+      <_RelayHostLine Include="@(_RelayEnvLine)" Condition="$([System.String]::Copy('%(Identity)').StartsWith('RELAY_HOST='))" />
+      <_RelayPortLine Include="@(_RelayEnvLine)" Condition="$([System.String]::Copy('%(Identity)').StartsWith('RELAY_PORT='))" />
+      <_RelayKeyLine Include="@(_RelayEnvLine)" Condition="$([System.String]::Copy('%(Identity)').StartsWith('RELAY_INGEST_KEY='))" />
+    </ItemGroup>
+    <PropertyGroup>
+      <_RelayHost>@(_RelayHostLine)</_RelayHost>
+      <_RelayPort>@(_RelayPortLine)</_RelayPort>
+      <_RelayKey>@(_RelayKeyLine)</_RelayKey>
+      <_RelayHost Condition="'$(_RelayHost)' != ''">$(_RelayHost.Substring(11).Trim())</_RelayHost>
+      <_RelayPort Condition="'$(_RelayPort)' != ''">$(_RelayPort.Substring(11).Trim())</_RelayPort>
+      <_RelayPort Condition="'$(_RelayPort)' == ''">2003</_RelayPort>
+      <_RelayKey Condition="'$(_RelayKey)' != ''">$(_RelayKey.Substring(17).Trim())</_RelayKey>
+      <_RelayUrl Condition="'$(_RelayHost)' != ''">http://$(_RelayHost):$(_RelayPort)</_RelayUrl>
+      <_RelayConfigPath>$(IntermediateOutputPath)report-relay.json</_RelayConfigPath>
+    </PropertyGroup>
+    <WriteLinesToFile File="$(_RelayConfigPath)" Overwrite="true" WriteOnlyWhenDifferent="true"
+                      Lines="{ &quot;Url&quot;: &quot;$(_RelayUrl)&quot;, &quot;Key&quot;: &quot;$(_RelayKey)&quot; }" />
+    <ItemGroup>
+      <Content Include="$(_RelayConfigPath)" Link="report-relay.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+      <FileWrites Include="$(_RelayConfigPath)" />
+    </ItemGroup>
+  </Target>
+  <!-- AGENT_SELECTION=yes in .env lets each terminal use OpenCode, Claude Code or Codex (home build);
+       anything else keeps every terminal on OpenCode (in-house build). Written to features.json next to the app. -->
+  <Target Name="WriteFeatureConfig" BeforeTargets="AssignTargetPaths">
+    <ReadLinesFromFile File="$(MSBuildProjectDirectory)\.env" Condition="Exists('$(MSBuildProjectDirectory)\.env')">
+      <Output TaskParameter="Lines" ItemName="_FeatureEnvLine" />
+    </ReadLinesFromFile>
+    <ItemGroup>
+      <_AgentSelectionLine Include="@(_FeatureEnvLine)" Condition="$([System.String]::Copy('%(Identity)').StartsWith('AGENT_SELECTION='))" />
+    </ItemGroup>
+    <PropertyGroup>
+      <_AgentSelection>@(_AgentSelectionLine)</_AgentSelection>
+      <_AgentSelection Condition="'$(_AgentSelection)' != ''">$(_AgentSelection.Substring(16).Trim().ToLowerInvariant())</_AgentSelection>
+      <_AgentSelectionJson>false</_AgentSelectionJson>
+      <_AgentSelectionJson Condition="'$(_AgentSelection)' == 'yes' Or '$(_AgentSelection)' == 'y' Or '$(_AgentSelection)' == 'true' Or '$(_AgentSelection)' == '1'">true</_AgentSelectionJson>
+      <_FeatureConfigPath>$(IntermediateOutputPath)features.json</_FeatureConfigPath>
+    </PropertyGroup>
+    <WriteLinesToFile File="$(_FeatureConfigPath)" Overwrite="true" WriteOnlyWhenDifferent="true"
+                      Lines="{ &quot;AgentSelection&quot;: $(_AgentSelectionJson) }" />
+    <ItemGroup>
+      <Content Include="$(_FeatureConfigPath)" Link="features.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+      <FileWrites Include="$(_FeatureConfigPath)" />
+    </ItemGroup>
+  </Target>
+  <!-- Master accounts: MASTER_USERS in .env, comma-separated Windows account names, the one list for everything limited by
+       account (Loop · Auto Recommand, writing announcements, changing and deleting any skill, seeing the skill store).
+       Compiled into the assembly (not a file users could edit); without the line the built-in default applies
+       (test_01, test_07, test_08). The earlier per-feature lines are no longer read: the build warns when it finds one. -->
+  <Target Name="EmbedAccountLists" BeforeTargets="GetAssemblyAttributes">
+    <ReadLinesFromFile File="$(MSBuildProjectDirectory)\.env" Condition="Exists('$(MSBuildProjectDirectory)\.env')">
+      <Output TaskParameter="Lines" ItemName="_AccountEnvLine" />
+    </ReadLinesFromFile>
+    <ItemGroup>
+      <_MasterUsersLine Include="@(_AccountEnvLine)" Condition="$([System.String]::Copy('%(Identity)').StartsWith('MASTER_USERS='))" />
+      <_OldAccountLine Include="@(_AccountEnvLine)" Condition="$([System.String]::Copy('%(Identity)').StartsWith('LOOP_AUTO_RECOMMAND_USERS=')) Or $([System.String]::Copy('%(Identity)').StartsWith('ANNOUNCEMENT_EDITORS=')) Or $([System.String]::Copy('%(Identity)').StartsWith('SKILL_STORE_ADMINS=')) Or $([System.String]::Copy('%(Identity)').StartsWith('SKILL_STORE_USERS='))" />
+    </ItemGroup>
+    <PropertyGroup>
+      <_MasterUsersEnv>@(_MasterUsersLine)</_MasterUsersEnv>
+      <_MasterUsers Condition="'$(_MasterUsersEnv)' != ''">$(_MasterUsersEnv.Substring(13).Trim())</_MasterUsers>
+    </PropertyGroup>
+    <Warning Condition="'@(_OldAccountLine)' != ''" Text=".env: LOOP_AUTO_RECOMMAND_USERS, ANNOUNCEMENT_EDITORS, SKILL_STORE_ADMINS and SKILL_STORE_USERS are no longer read. Put the accounts in one MASTER_USERS line." />
+    <ItemGroup>
+      <AssemblyMetadata Include="TerminalNotes.MasterUsers" Value="$(_MasterUsers)" Condition="'$(_MasterUsersEnv)' != ''" />
+    </ItemGroup>
+  </Target>
+  <!-- OPENCODE_INSTALL_COMMAND in .env: the PowerShell command the app runs (in its own window) when OpenCode is missing.
+       Compiled into the assembly (OpenCodeInstallCommand in Services.cs). -->
+  <Target Name="EmbedInstallCommand" BeforeTargets="GetAssemblyAttributes">
+    <ReadLinesFromFile File="$(MSBuildProjectDirectory)\.env" Condition="Exists('$(MSBuildProjectDirectory)\.env')">
+      <Output TaskParameter="Lines" ItemName="_InstallEnvLine" />
+    </ReadLinesFromFile>
+    <ItemGroup>
+      <_InstallCommandLine Include="@(_InstallEnvLine)" Condition="$([System.String]::Copy('%(Identity)').StartsWith('OPENCODE_INSTALL_COMMAND='))" />
+    </ItemGroup>
+    <PropertyGroup>
+      <_InstallCommandEnv>@(_InstallCommandLine)</_InstallCommandEnv>
+      <_InstallCommand Condition="'$(_InstallCommandEnv)' != ''">$(_InstallCommandEnv.Substring(25).Trim())</_InstallCommand>
+    </PropertyGroup>
+    <ItemGroup>
+      <AssemblyMetadata Include="TerminalNotes.OpenCodeInstallCommand" Value="$(_InstallCommand)" Condition="'$(_InstallCommand)' != ''" />
+    </ItemGroup>
+  </Target>
+  <!-- Auto-update source: UPDATE_* lines in .env become update.json next to the app (see .env.sample). -->
+  <Target Name="WriteUpdateConfig" BeforeTargets="AssignTargetPaths">
+    <ReadLinesFromFile File="$(MSBuildProjectDirectory)\.env" Condition="Exists('$(MSBuildProjectDirectory)\.env')">
+      <Output TaskParameter="Lines" ItemName="_UpdateEnvLine" />
+    </ReadLinesFromFile>
+    <ItemGroup>
+      <_UpdateApiLine Include="@(_UpdateEnvLine)" Condition="$([System.String]::Copy('%(Identity)').StartsWith('UPDATE_GITHUB_API='))" />
+      <_UpdateRepoLine Include="@(_UpdateEnvLine)" Condition="$([System.String]::Copy('%(Identity)').StartsWith('UPDATE_REPOSITORY='))" />
+      <_UpdateTokenLine Include="@(_UpdateEnvLine)" Condition="$([System.String]::Copy('%(Identity)').StartsWith('UPDATE_TOKEN='))" />
+      <_UpdateAssetLine Include="@(_UpdateEnvLine)" Condition="$([System.String]::Copy('%(Identity)').StartsWith('UPDATE_ASSET='))" />
+    </ItemGroup>
+    <PropertyGroup>
+      <_UpdateApi>@(_UpdateApiLine)</_UpdateApi>
+      <_UpdateRepo>@(_UpdateRepoLine)</_UpdateRepo>
+      <_UpdateToken>@(_UpdateTokenLine)</_UpdateToken>
+      <_UpdateAsset>@(_UpdateAssetLine)</_UpdateAsset>
+      <_UpdateApi Condition="'$(_UpdateApi)' != ''">$(_UpdateApi.Substring(18).Trim())</_UpdateApi>
+      <_UpdateRepo Condition="'$(_UpdateRepo)' != ''">$(_UpdateRepo.Substring(18).Trim())</_UpdateRepo>
+      <_UpdateToken Condition="'$(_UpdateToken)' != ''">$(_UpdateToken.Substring(13).Trim())</_UpdateToken>
+      <_UpdateAsset Condition="'$(_UpdateAsset)' != ''">$(_UpdateAsset.Substring(13).Trim())</_UpdateAsset>
+      <!-- On the Actions runner an empty UPDATE_REPOSITORY means "this repository": releases come from the same place. An
+           empty UPDATE_GITHUB_API there is the runner's own GitHub (the company Enterprise one in-house); off the runner the app
+           falls back to github.com. -->
+      <_UpdateApi Condition="('$(_UpdateRepo)' == '' or '$(_UpdateApi)' == '') and '$(GITHUB_ACTIONS)' == 'true'">$(GITHUB_API_URL)</_UpdateApi>
+      <_UpdateRepo Condition="'$(_UpdateRepo)' == '' and '$(GITHUB_ACTIONS)' == 'true'">$(GITHUB_REPOSITORY)</_UpdateRepo>
+      <_UpdateConfigPath>$(IntermediateOutputPath)update.json</_UpdateConfigPath>
+    </PropertyGroup>
+    <WriteLinesToFile File="$(_UpdateConfigPath)" Overwrite="true" WriteOnlyWhenDifferent="true"
+                      Lines="{ &quot;Api&quot;: &quot;$(_UpdateApi)&quot;, &quot;Repository&quot;: &quot;$(_UpdateRepo)&quot;, &quot;Token&quot;: &quot;$(_UpdateToken)&quot;, &quot;Asset&quot;: &quot;$(_UpdateAsset)&quot; }" />
+    <ItemGroup>
+      <Content Include="$(_UpdateConfigPath)" Link="update.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+      <FileWrites Include="$(_UpdateConfigPath)" />
+    </ItemGroup>
+  </Target>
+</Project>

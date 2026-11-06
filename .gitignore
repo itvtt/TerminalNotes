@@ -1,0 +1,44 @@
+bin/
+obj/
+# 빌드 결과(로컬 dist, 릴리스 out)는 올리지 않습니다.
+dist/
+out/
+Temp/
+artifacts/
+.vs/
+*.user
+# 개인 PC용 바로 가기
+*.lnk
+
+# 보고서 중계 설정: 실제 값(.env)은 올리지 않고 .env.sample만 올립니다.
+.env
+!.env.sample
+# 중계 서버가 받은 보고서와 실행 파일
+relay/**/reports/
+relay/dist/
+
+# 공통 제외 (예전 i-luncher 저장소 규칙): 빌드 결과·개인 설정·비밀값
+bin/
+obj/
+out/
+dist/
+artifacts/
+.vs/
+.vshistory/
+*.user
+*.suo
+__pycache__/
+*.pyc
+logs/
+*.log
+*.lnk
+.pullverse*/
+AGENTS.md
+.env
+.env.*
+!.env.sample
+!.env.example
+*.pfx
+*.p12
+*.pem
+*.key

@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Terminal Notes · 모드별 실습 가이드</title>
+<style>
+:root{
+  --canvas:#121212;--shell:#161616;--panel:#1a1a1a;--raise:#222222;--line:#2c2c2c;
+  --text:#f2f2f2;--text2:#bdbdbd;--muted:#8c8c8c;--gold:#e5c07b;--gold-hi:#f6dda2;--gold-lo:#c99d50;--ink:#212121;
+  font-family:"Pretendard","Malgun Gothic",system-ui,sans-serif;color:var(--text);background:var(--canvas);color-scheme:dark
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--canvas)}
+body{display:grid;grid-template-rows:auto auto minmax(0,1fr) auto;height:100dvh;overflow:hidden}
+button{font:inherit;color:inherit}
+header{display:flex;align-items:center;gap:14px;padding:10px 16px;background:var(--shell);border-bottom:1px solid transparent;
+  border-image:linear-gradient(90deg,transparent,var(--gold) 30%,var(--gold-hi) 50%,var(--gold) 70%,transparent) 1;flex-wrap:wrap}
+.brand{font-weight:700;font-size:15px;letter-spacing:-.01em;white-space:nowrap}
+.brand b{background:linear-gradient(100deg,var(--text) 35%,var(--gold-hi) 50%,var(--text) 65%);background-size:250% 100%;
+  -webkit-background-clip:text;background-clip:text;color:transparent;animation:shine 6s ease-in-out infinite}
+@keyframes shine{0%,60%{background-position:120% 0}100%{background-position:-120% 0}}
+.modes{display:flex;gap:6px;margin-left:auto;flex-wrap:wrap}
+.mode{border:1px solid var(--line);background:var(--panel);border-radius:8px;padding:6px 12px;cursor:pointer;display:flex;flex-direction:column;align-items:flex-start;line-height:1.25;min-width:118px;transition:transform .15s,border-color .2s,background .2s}
+.mode:hover{border-color:#777777;transform:translateY(-1px)}
+.mode:active{transform:scale(.97)}
+.mode strong{font-size:14px}.mode span{font-size:11px;color:var(--muted)}
+.mode[aria-pressed="true"]{background:linear-gradient(180deg,var(--gold-hi),#e3bc6e 55%,var(--gold-lo));border-color:#f8e4b0;color:var(--ink)}
+.mode[aria-pressed="true"] span{color:#3b3b3b}
+.intro{display:flex;gap:12px;align-items:center;padding:10px 18px;background:var(--panel);border-bottom:1px solid var(--line)}
+.intro .badge{flex:none;font-size:12px;font-weight:700;color:var(--ink);background:var(--gold);border-radius:999px;padding:3px 10px}
+.intro p{margin:0;font-size:14px;color:var(--text2);line-height:1.5}
+.intro p strong{color:var(--text)}
+.stage{position:relative;min-height:0;display:grid;grid-template-rows:auto minmax(0,1fr);padding:10px 14px 6px;gap:8px}
+.caption{display:flex;align-items:baseline;gap:10px;min-height:44px}
+.caption .num{flex:none;font-weight:700;color:var(--gold);font-variant-numeric:tabular-nums}
+.caption h2{margin:0;font-size:clamp(17px,2.4vw,22px);letter-spacing:-.03em;line-height:1.35}
+.caption p{margin:2px 0 0;font-size:13px;color:var(--text2);line-height:1.5;white-space:pre-line}
+.screen-wrap{position:relative;min-height:0;display:flex;align-items:center;justify-content:center}
+.viewport{position:relative;flex:none;border-radius:10px;overflow:hidden;box-shadow:0 0 0 1px var(--line),0 18px 50px #0008;isolation:isolate;
+  animation:rise .45s cubic-bezier(.2,.8,.2,1)}
+@keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+.viewport img{position:absolute;inset:0;width:100%;height:100%;user-select:none;pointer-events:none}
+.ring{position:absolute;z-index:5;border:2px solid var(--gold);border-radius:7px;pointer-events:none;
+  box-shadow:0 0 0 2000px #0b0a0866,0 0 18px #e6c47e88;transition:all .35s cubic-bezier(.2,.8,.2,1)}
+.ring.pressed{background:#e6c47e33;border-color:#fff}
+.ring.hidden{opacity:0}
+.label{position:absolute;white-space:nowrap;background:linear-gradient(180deg,var(--gold-hi),var(--gold-lo));color:var(--ink);border-radius:7px;padding:3px 10px;
+  font-size:13px;font-weight:700;box-shadow:0 4px 12px #0008}
+.cursor{position:absolute;z-index:8;width:30px;height:38px;filter:drop-shadow(2px 3px 3px #000b);pointer-events:none}
+.ripple{position:absolute;z-index:7;width:46px;height:46px;border:3px solid var(--gold-hi);border-radius:50%;pointer-events:none}
+.typed{position:absolute;z-index:4;pointer-events:none;color:var(--text);overflow:hidden;white-space:pre-wrap;overflow-wrap:anywhere}
+.typed.field{display:flex;align-items:center;padding:0 12px;font-size:clamp(11px,1.3vw,15px);background:#0d0d0d}
+.typed.plan{padding:8px 10px;font-size:clamp(9px,1.05vw,13px);line-height:1.5;background:#0d0d0d}
+.typed.terminal{padding:10px 14px;font-family:"Cascadia Mono",Consolas,"Malgun Gothic",monospace;font-size:clamp(10px,1.2vw,15px);line-height:1.6;background:#101010;border:1px solid var(--line);border-radius:6px}
+.typed.terminal::before{content:"> ";color:var(--gold)}
+.caret{display:inline-block;width:2px;height:1em;background:var(--gold);vertical-align:-.12em;margin-left:1px;animation:blink 1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+.check{position:absolute;z-index:4;background:var(--gold);border-radius:2px;pointer-events:none}
+.check::after{content:"";position:absolute;left:33%;top:8%;width:30%;height:60%;border:solid var(--ink);border-width:0 2px 2px 0;transform:rotate(45deg)}
+.result{position:absolute;z-index:4;padding:14px 18px;background:#101010f2;border:1px solid var(--gold);border-radius:8px;pointer-events:none;
+  font-family:"Cascadia Mono",Consolas,"Malgun Gothic",monospace;font-size:clamp(10px,1.25vw,15px);line-height:1.7;color:var(--text);white-space:pre-line;
+  box-shadow:0 0 30px #e6c47e33}
+.result .line{opacity:0;transform:translateY(4px);transition:all .35s}
+.result .line.on{opacity:1;transform:none}
+.result .line.done::first-letter{color:var(--gold)}
+.ghost{position:absolute;z-index:6;pointer-events:none;padding:6px 12px;border:1px solid var(--gold);border-radius:7px;background:#333333ee;color:var(--text);
+  font-size:clamp(10px,1.2vw,14px);font-weight:600;box-shadow:0 8px 24px #000a;transform:translate(-20%,-50%) rotate(-2deg)}
+.placed{position:absolute;z-index:4;display:flex;align-items:center;justify-content:flex-start;padding-top:12%;flex-direction:column;gap:6px;background:#1e1d1bf0;border:2px solid var(--gold);border-radius:7px;pointer-events:none;color:var(--text);font-weight:700;font-size:clamp(11px,1.4vw,17px)}
+.mask{position:absolute;z-index:3;background:#101010;pointer-events:none}
+.placed small{font-weight:400;color:var(--muted);font-size:.75em}
+.loopfx{position:absolute;z-index:4;display:flex;align-items:center;justify-content:center;background:#3d3d3d;border-radius:6px;pointer-events:none}
+.loopfx img{width:84%;height:84%;animation:spin 2.6s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.qcard{position:absolute;z-index:4;padding:16px 18px;background:#101010;border:1px solid var(--line);border-radius:8px;pointer-events:none;
+  font-family:"Cascadia Mono",Consolas,"Malgun Gothic",monospace;color:var(--text);font-size:clamp(10px,1.2vw,14px);line-height:1.55;overflow:hidden}
+.qcard .qtitle{color:var(--gold);font-weight:700;margin-bottom:6px}
+.qcard .qtext{margin-bottom:10px}
+.qcard .opt{display:flex;gap:8px;align-items:flex-start;padding:6px 10px;margin:4px 0;border:1px solid #2c2c2c;border-radius:6px;transition:all .25s}
+.qcard .opt b{color:var(--muted);font-weight:600}
+.qcard .opt small{display:block;color:var(--muted);font-size:.85em}
+.qcard .opt.rec b{color:var(--gold)}
+.qcard .opt.sel{border-color:var(--gold);background:#262626;box-shadow:0 0 14px #e5c07b33}
+.sheet{display:none;width:min(980px,100%);max-height:100%;overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;animation:rise .45s}
+.sheet.on{display:block}
+.command{margin:0 0 10px;padding:8px 12px;border-left:3px solid var(--gold);background:var(--raise);border-radius:4px;font-size:13px;line-height:1.6}
+.command b{display:block;font-size:11px;color:var(--muted);font-weight:600}
+.pair{display:grid;grid-template-columns:minmax(0,1fr) 24px minmax(0,1fr);gap:8px;align-items:start}
+.arrow{align-self:center;text-align:center;color:var(--gold);font-size:20px}
+.book{border:1px solid var(--line);border-radius:8px;overflow:hidden;background:#fbf8f2;color:#2b2a27}
+.book h3{margin:0;padding:7px 10px;font-size:13px;background:#efe7d6;color:#454545}
+.book.after h3{background:#f3e3b8}
+.book h3 span{display:block;font-weight:400;font-size:11px;color:#6b6b6b}
+table{width:100%;border-collapse:collapse;font-size:12px;font-variant-numeric:tabular-nums}
+th,td{border:1px solid #e3dccd;padding:3px 6px;text-align:right;height:22px}
+th{background:#f4efe4;font-weight:600;text-align:center}
+td:first-child{text-align:left}
+tr.match td{background:#fbefd0}
+td.pick{background:#f1d48f;outline:2px solid #b8893a;outline-offset:-2px;font-weight:700}
+tr.total td{font-weight:700;background:#f7ecd2}
+.downloads{display:flex;gap:10px;justify-content:flex-end;margin-top:8px;font-size:12px}
+.downloads a{color:var(--gold)}
+nav{display:flex;align-items:center;justify-content:center;gap:8px;padding:8px;background:var(--shell);border-top:1px solid var(--line)}
+nav button{height:34px;padding:0 14px;border-radius:7px;border:1px solid var(--line);background:var(--raise);cursor:pointer;transition:transform .12s,border-color .2s}
+nav button:hover:not(:disabled){border-color:#777777}
+nav button:active:not(:disabled){transform:scale(.96)}
+nav button:disabled{opacity:.4;cursor:default}
+nav #play{min-width:92px;background:linear-gradient(180deg,var(--gold-hi),#e3bc6e 55%,var(--gold-lo));border-color:#f8e4b0;color:var(--ink);font-weight:700}
+.progress{flex:1;max-width:320px;height:4px;border-radius:2px;background:var(--raise);overflow:hidden}
+.progress i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--gold-lo),var(--gold-hi))}
+#counter{min-width:52px;text-align:center;font-variant-numeric:tabular-nums;color:var(--text2);font-size:13px}
+button:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
+.foot{margin:0;padding:0 14px 6px;font-size:11px;color:var(--muted);text-align:center}
+#screenError{color:var(--text2);padding:24px}
+[hidden]{display:none!important}
+@media(max-width:640px){header{padding:8px 10px}.modes{margin-left:0;width:100%}.mode{flex:1;min-width:0}.intro{padding:8px 10px}.intro p{font-size:12px}
+  .stage{padding:8px}.pair{grid-template-columns:minmax(0,1fr)}.arrow{transform:rotate(90deg)}nav{gap:5px}nav button{padding:0 9px;font-size:13px}.progress{display:none}}
+@media(prefers-reduced-motion:reduce){.viewport,.sheet{animation:none}.brand b,.loopfx img,.caret{animation:none}}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><b>Terminal Notes</b> · 모드별 실습</div>
+  <div class="modes" role="group" aria-label="작업 모드 고르기">
+    <button type="button" class="mode" data-track="basic" aria-pressed="true"><strong>일반</strong><span>초심자 모드</span></button>
+    <button type="button" class="mode" data-track="plan" aria-pressed="false"><strong>플랜</strong><span>계획대로 진행</span></button>
+    <button type="button" class="mode" data-track="advanced" aria-pressed="false"><strong>고급</strong><span>멀티 · Loop</span></button>
+  </div>
+</header>
+<div class="intro"><span class="badge" id="badge">일반</span><p id="purpose"></p></div>
+<main class="stage">
+  <div class="caption" aria-live="polite"><span class="num" id="num">1</span><div><h2 id="instruction"></h2><p id="note"></p></div></div>
+  <div class="screen-wrap" id="wrap">
+    <div class="viewport" id="viewport">
+      <img id="shot" alt="" draggable="false">
+      <div id="layer"></div>
+      <div class="ring" id="ring"><span class="label" id="label"></span></div>
+      <div class="ripple" id="ripple" hidden></div>
+      <svg class="cursor" id="cursor" viewBox="0 0 34 43" aria-hidden="true"><path d="M3 2 L3 31 L11 24 L17 39 L24 36 L18 22 L29 22 Z" fill="#fff" stroke="#212121" stroke-width="2.5" stroke-linejoin="round"/></svg>
+    </div>
+    <section class="sheet" id="sheet" aria-label="엑셀 정리 전후 비교">
+      <p class="command"><b>입력한 요청</b><span id="sheetCommand"></span></p>
+      <div class="pair">
+        <div class="book"><h3>요청 전 · 판매 내역<span id="beforeName"></span></h3><table id="beforeTable"></table></div>
+        <div class="arrow" aria-hidden="true">→</div>
+        <div class="book after"><h3>요청 후 · 상품별 합계<span id="afterName"></span></h3><table id="afterTable"></table></div>
+      </div>
+      <div class="downloads"><a id="beforeLink" download>매출.xlsx 받기</a><a id="afterLink" download>매출_정리.xlsx 받기</a></div>
+    </section>
+    <p id="screenError" hidden>앱 화면을 불러오지 못했습니다. 이 HTML을 interactive·examples 폴더와 함께 열어 주세요.</p>
+  </div>
+</main>
+<nav aria-label="안내 재생과 단계 이동">
+  <button type="button" id="prev">이전</button>
+  <span id="counter">1 / 1</span>
+  <button type="button" id="next">다음</button>
+  <div class="progress" aria-hidden="true"><i id="bar"></i></div>
+  <button type="button" id="play">일시정지</button>
+  <button type="button" id="replay">다시 보기</button>
+</nav>
+<p class="foot">실제 앱 화면(v1.0.127) · 입력과 결과는 예시</p>
+<script src="interactive/screens.js"></script>
+<script src="examples/excel-data.js"></script>
+<script>
+(() => {
+  'use strict';
+  const screens = window.TERMINAL_GUIDE_SCREENS || {};
+  const excel = window.TERMINAL_GUIDE_EXCEL || {};
+  const request = excel.planText || '매출.xlsx에 수식을 넣어 상품별 매출과 전체 합계를 정리해 줘. 원본은 그대로 두고 새 파일로 저장해 줘.';
+  const plan = '## 목표\n- 매출.xlsx를 상품별 합계로 정리\n## 순서\n- 금액 = 수량 × 단가 수식\n- 요약 시트에 상품별 SUMIF\n- 전체 합계 후 새 파일로 저장\n## 완료 기준\n- 원본 유지, 매출_정리.xlsx 생성';
+  const tracks = {
+    basic: {
+      badge: '일반 · 초심자',
+      purpose: '터미널 하나에 말하듯 입력하면 됩니다.',
+      stages: [
+        {screen:'setup',target:'basic',kind:'click',label:'일반 모드',text:'처음 실행하면 일반 모드를 고릅니다.'},
+        {screen:'setup',target:'browse',kind:'click',effect:'fill',fillTarget:'folder',value:'C:\\opencode',label:'찾아보기…',text:'찾아보기…를 눌러 작업 폴더를 고릅니다.'},
+        {screen:'setup',target:'start',kind:'click',label:'시작',text:'시작을 누릅니다.'},
+        {screen:'basic',target:'run',kind:'click',label:'▶ 실행',text:'▶ 실행을 누르면 터미널이 열립니다.'},
+        {screen:'basic',target:'terminal',mask:'terminal',box:{x:40,y:150,w:1060,h:120},kind:'type',style:'terminal',value:request,label:'터미널',text:'터미널에 하고 싶은 일을 말하듯 입력하고 Enter.',duration:6200},
+        {screen:'basic',target:'terminal',mask:'terminal',box:{x:40,y:290,w:1060,h:170},kind:'result',label:'결과',lines:['완료: 상품별 합계를 정리했습니다.','사용 함수: SUMIF','결과 파일: 매출_정리.xlsx'],text:'터미널에서 결과를 확인합니다.'},
+        {kind:'sheet',text:'이렇게 부탁하니 엑셀이 정리됐어요.',duration:9000}
+      ]
+    },
+    plan: {
+      badge: '플랜 · 계획대로',
+      purpose: '플랜메이커로 계획을 세우고, 그 계획대로 진행합니다.',
+      stages: [
+        {screen:'setup',target:'plan',kind:'click',label:'플랜 모드',text:'플랜 모드를 고릅니다.'},
+        {screen:'setup-plan',target:'browse',kind:'click',effect:'fill',fillTarget:'folder',value:'C:\\opencode',label:'찾아보기…',text:'찾아보기…를 눌러 작업 폴더를 고릅니다.'},
+        {screen:'setup-plan',target:'auto',kind:'click',effect:'check',label:'Auto Mode',text:'Auto Mode를 켭니다.'},
+        {screen:'setup-ready',target:'start',kind:'click',label:'시작',text:'시작을 누릅니다.'},
+        {screen:'empty',target:'new',kind:'click',label:'＋ new',text:'＋ new로 새 태스크를 만듭니다.'},
+        {screen:'create',target:'name',kind:'type',style:'field',value:'연습',label:'이름',text:'이름에 연습을 입력합니다.',duration:3000},
+        {screen:'create',target:'create',kind:'click',label:'만들기',text:'만들기를 누릅니다.'},
+        {screen:'task',target:'planmaker',kind:'click',label:'플랜메이커',text:'플랜메이커를 눌러 계획 세우기를 시작합니다.'},
+        {screen:'planmaker',target:'qa',kind:'question',label:'질문',title:'질문 1',question:'엑셀을 어떻게 정리할까요?',
+          options:[['상품별 합계를 새 파일로 (추천)','원본은 그대로 두고 결과만 따로 저장합니다.'],['원본 파일에 바로 합계 추가','원본이 바뀝니다.'],['차트까지 함께 만들기','작업이 길어집니다.']],pick:0,
+          text:'플랜메이커가 오른쪽 칸에서 질문합니다. 답을 고르세요.',note:'Auto Recommand를 켜면 추천 답으로 자동 진행합니다.',duration:5200},
+        {screen:'planmaker',target:'qa',kind:'question',label:'질문',title:'질문 2',question:'다 됐는지는 어떻게 확인할까요?',
+          options:[['상품별 합계와 전체 합계가 맞으면 완료 (추천)','결과 파일만 열어 보면 확인할 수 있습니다.'],['원본과 한 줄씩 대조','시간이 더 걸립니다.']],pick:0,
+          text:'완료 기준도 함께 정합니다.',duration:4800},
+        {screen:'planmaker',target:'plan',kind:'type',style:'plan',value:plan,carry:true,label:'현재 플랜',text:'답할 때마다 왼쪽 플랜에 바로 정리됩니다.',duration:6500},
+        {screen:'planmaker',target:'finish',kind:'click',label:'플랜으로 돌아가기',text:'플랜으로 돌아가기를 누릅니다.'},
+        {screen:'task',target:'execute',kind:'click',label:'실행',text:'실행을 누르면 플랜대로 시작합니다.',note:'저장=저장만 · 실행=저장 후 시작 · 전송=터미널로만',duration:4500},
+        {screen:'task',target:'result',box:{x:420,y:150,w:680,h:230},kind:'result',label:'플랜 진행',lines:['플랜 확인: 순서 3단계','✓ 1. 금액 = 수량 × 단가','✓ 2. 요약 시트에 상품별 SUMIF','✓ 3. 전체 합계 · 매출_정리.xlsx 저장','완료 기준 충족 · 원본 유지'],text:'에이전트가 플랜의 순서를 따라 진행합니다.',duration:5200},
+        {kind:'sheet',text:'계획한 결과 그대로 정리됐어요.',duration:9000}
+      ]
+    },
+    advanced: {
+      badge: '고급 · 멀티 + Loop',
+      purpose: '여러 터미널을 함께 돌리고, Loop로 개선을 이어 갑니다.',
+      stages: [
+        {screen:'advanced',target:'layout',kind:'click',label:'2칸',text:'위의 숫자로 화면을 2칸으로 나눕니다.'},
+        {screen:'advanced',target:'task',to:'slot',kind:'drag',ghost:'⠿  엑셀 정리',label:'끌어 놓기',text:'태스크를 원하는 터미널 칸으로 끌어 놓습니다.',duration:4200},
+        {screen:'advanced',target:'loop',kind:'click',effect:'loop',label:'Loop',text:'맨 오른쪽 Loop 아이콘을 켭니다.',duration:4200},
+        {screen:'advanced',target:'start',kind:'click',label:'▷ 실행',text:'▷ 실행으로 시작합니다.'},
+        {screen:'advanced',target:'slot',box:{x:775,y:330,w:340,h:220},kind:'result',label:'Loop 진행',lines:['✓ 1회차: 요청한 정리 완료','✓ 검토 후 다음 개선 플랜 작성','… 2회차 진행 중','(다른 칸의 태스크도 동시에 진행)'],text:'Loop가 개선을 이어 갑니다.',duration:5600}
+      ]
+    }
+  };
+  const $ = id => document.getElementById(id);
+  const viewport=$('viewport'), shot=$('shot'), layer=$('layer'), ring=$('ring'), label=$('label'), cursor=$('cursor'), ripple=$('ripple'), sheet=$('sheet');
+  const reducedQuery = matchMedia('(prefers-reduced-motion: reduce)');
+  let trackKey='basic', index=0, elapsed=0, playing=!reducedQuery.matches, finished=false, last=null, frame=0;
+  let typedState={};          // per track: screen|target -> final text, so later steps keep what was typed
+  let effects={};             // per track: screen|target -> effect name that stays on
+  const clamp=(v,a=0,b=1)=>Math.max(a,Math.min(b,v));
+  const ease=t=>t*t*(3-2*t);
+  const track=()=>tracks[trackKey];
+  const stage=()=>track().stages[index];
+  const durationOf=s=>s.duration|| (s.kind==='click'?3200:s.kind==='type'?Math.max(3000,1400+s.value.length*45):4200);
+  function box(s,key){const sc=screens[s.screen];return key==='__box'?s.box:(sc&&sc.targets[key]);}
+  function place(el,b,sc){el.style.left=b.x/sc.width*100+'%';el.style.top=b.y/sc.height*100+'%';el.style.width=b.w/sc.width*100+'%';el.style.height=b.h/sc.height*100+'%';}
+  function fit(){
+    const s=stage(); if(s.kind==='sheet') return;
+    const sc=screens[s.screen]; if(!sc) return;
+    const area=$('wrap').getBoundingClientRect();
+    const scale=Math.min(area.width/sc.width,area.height/sc.height,sc.width<600?1.7:1.25);
+    viewport.style.width=sc.width*scale+'px'; viewport.style.height=sc.height*scale+'px';
+  }
+  function overlay(cls,b,sc,html){const el=document.createElement('div');el.className=cls;place(el,b,sc);if(html!=null)el.innerHTML=html;layer.append(el);return el;}
+  function escape(t){return t.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'})[c]);}
+  function show(i){
+    cancelAnimationFrame(frame);frame=0;last=null;elapsed=0;finished=false;
+    const list=track().stages; index=clamp(Math.round(i),0,list.length-1);
+    // Steps before this one are complete: keep their typed text and effects.
+    typedState={};effects={};
+    list.slice(0,index).forEach(p=>{if(p.kind==='type')typedState[p.screen+'|'+p.target]=p;if(p.effect)effects[p.screen+'|'+p.target]=p;
+      if(p.kind==='drag')effects[p.screen+'|'+p.to]={screen:p.screen,target:p.to,effect:'placed',ghost:p.ghost};});
+    const s=stage();
+    s._placed=null; s._effectOn=false;
+    $('num').textContent=index+1; $('instruction').textContent=s.text; $('note').textContent=s.note||'';
+    $('counter').textContent=`${index+1} / ${list.length}`;
+    $('prev').disabled=index===0; $('next').disabled=index===list.length-1;
+    layer.replaceChildren();
+    const isSheet=s.kind==='sheet';
+    viewport.hidden=isSheet; sheet.classList.toggle('on',isSheet);
+    if(isSheet){buildSheet();controls();schedule();return;}
+    const sc=screens[s.screen];
+    if(!sc){viewport.hidden=true;$('screenError').hidden=false;return;}
+    $('screenError').hidden=true;
+    viewport.style.animation='none';void viewport.offsetWidth;viewport.style.animation='';
+    shot.src=sc.src; shot.alt=`${s.text} · Terminal Notes 실제 화면`;
+    fit();
+    // Earlier typed fields and effects on this same screen stay visible.
+    if(s.mask&&sc.targets[s.mask])overlay('mask',sc.targets[s.mask],sc);
+    Object.values(typedState).filter(p=>(p.screen===s.screen||(p.carry&&sc.targets[p.target]))&&!(p.target===s.target&&s.kind==='type')).forEach(p=>{
+      const el=overlay('typed '+p.style,p.box||sc.targets[p.target],sc);el.textContent=p.value;});
+    Object.values(effects).filter(p=>p.screen===s.screen).forEach(p=>addEffect(p,sc));
+    const b=s.box||sc.targets[s.target];
+    place(ring,b,sc); ring.classList.remove('hidden','pressed'); label.textContent=s.label||'';
+    const top=b.y/sc.height; label.style.top=top<.12?'calc(100% + 8px)':'auto'; label.style.bottom=top<.12?'auto':'calc(100% + 8px)';
+    label.style.left=b.x/sc.width>.6?'auto':'0'; label.style.right=b.x/sc.width>.6?'0':'auto';
+    if(s.kind==='type'){s._el=overlay('typed '+s.style,b,sc,'');}
+    if(s.kind==='result'){s._el=overlay('result',b,sc,s.lines.map(l=>`<div class="line${/^✓/.test(l)?' done':''}">${escape(l)}</div>`).join(''));}
+    if(s.kind==='question'){
+      overlay('mask',b,sc);
+      s._el=overlay('qcard',b,sc,`<div class="qtitle">${escape(s.title)}</div><div class="qtext">${escape(s.question)}</div>`+
+        s.options.map((o,i)=>`<div class="opt${i===s.pick?' rec':''}" data-i="${i}"><b>${i+1}.</b><span>${escape(o[0])}<small>${escape(o[1])}</small></span></div>`).join(''));
+    }
+    if(s.kind==='drag'){s._ghost=overlay('ghost',{x:0,y:0,w:0,h:0},sc,escape(s.ghost));s._ghost.style.width='auto';s._ghost.style.height='auto';s._ghost.hidden=true;}
+    render(); controls(); schedule();
+  }
+  function addEffect(p,sc){
+    const b=sc.targets[p.target];
+    if(p.effect==='check'){const c=overlay('check',{x:b.x+1,y:b.y+1,w:14,h:14},sc);}
+    if(p.effect==='loop'){overlay('loopfx',b,sc,'<img src="interactive/loop-icon.png" alt="">');}
+    if(p.effect==='fill'){const f=overlay('typed field fillfx',sc.targets[p.fillTarget],sc);f.textContent=p.value;}
+    if(p.effect==='placed'){overlay('placed',b,sc,`${escape(p.ghost.replace('⠿','').trim())}<small>터미널 연결됨</small>`);}
+  }
+  function center(b,sc){return {x:(b.x+b.w/2)/sc.width*viewport.clientWidth,y:(b.y+b.h/2)/sc.height*viewport.clientHeight};}
+  function render(){
+    const s=stage(); if(s.kind==='sheet'){renderSheet();return;}
+    const sc=screens[s.screen]; if(!sc) return;
+    const reduced=reducedQuery.matches, t=reduced?durationOf(s):elapsed;
+    const b=s.box||sc.targets[s.target];
+    const click=s.kind==='click'||s.kind==='question', pressAt=s.kind==='question'?2600:1100;
+    let end=center(b,sc);
+    if(s.kind==='question'&&s._el){
+      const opt=s._el.querySelector(`.opt[data-i="${s.pick}"]`), vr=viewport.getBoundingClientRect();
+      if(opt){const r=opt.getBoundingClientRect();end={x:r.left-vr.left+Math.min(160,r.width/2),y:r.top-vr.top+r.height/2};}
+      s._el.querySelectorAll('.opt').forEach(o=>o.classList.toggle('sel',Number(o.dataset.i)===s.pick&&t>=pressAt));
+    }
+    if(s.kind==='drag'){
+      const to=sc.targets[s.to], from=end, dest=center(to,sc);
+      const k=ease(clamp((t-900)/1800));
+      end={x:from.x+(dest.x-from.x)*k,y:from.y+(dest.y-from.y)*k};
+      s._ghost.hidden=reduced||t<900||t>=2800;
+      s._ghost.style.left=end.x+'px';s._ghost.style.top=end.y+'px';
+      if(t>=2700&&!s._placed){s._placed=overlay('placed',to,sc,`${escape(s.ghost.replace('⠿','').trim())}<small>터미널 준비</small>`);place(ring,to,sc);label.textContent='터미널 칸';}
+      if(t<2700&&s._placed){s._placed.remove();s._placed=null;place(ring,b,sc);label.textContent=s.label;}
+    }
+    // Cursor glides in from the lower left, presses, then rests.
+    const travel=ease(clamp((t-(s.kind==='question'?1300:150))/900));
+    const startX=viewport.clientWidth*.12, startY=viewport.clientHeight*.9;
+    const x=s.kind==='drag'?end.x:startX+(end.x-startX)*travel, y=s.kind==='drag'?end.y:startY+(end.y-startY)*travel;
+    const hide=reduced||s.kind==='type'||s.kind==='result';
+    cursor.style.display=hide?'none':'block';
+    const press=(click&&t>=pressAt&&t<pressAt+300)||(s.kind==='drag'&&t>=900&&t<2800);
+    cursor.style.left=x-3+'px';cursor.style.top=y-2+'px';cursor.style.transform=press?'scale(.86)':'none';
+    ring.classList.toggle('pressed',click&&t>=pressAt&&t<pressAt+350);
+    ripple.hidden=reduced||!click||t<pressAt||t>=pressAt+700;
+    if(!ripple.hidden){const k=(t-pressAt)/700;ripple.style.left=end.x-23+'px';ripple.style.top=end.y-23+'px';ripple.style.transform=`scale(${.4+k*1.3})`;ripple.style.opacity=1-k;}
+    if(s.effect&&t>=pressAt+150&&!s._effectOn){s._effectOn=true;addEffect(s,sc);}
+    if(s.effect&&t<pressAt+150&&s._effectOn){s._effectOn=false;layer.querySelectorAll('.check,.loopfx,.fillfx').forEach(e=>e.remove());Object.values(effects).filter(p=>p.screen===s.screen).forEach(p=>addEffect(p,sc));}
+    if(s.kind==='type'){
+      const span=durationOf(s)-1600, n=Math.floor(s.value.length*clamp((t-400)/span));
+      s._el.textContent=s.value.slice(0,n);
+      if(n<s.value.length&&!reduced){const c=document.createElement('span');c.className='caret';s._el.append(c);}
+      s._el.scrollTop=s._el.scrollHeight;
+    }
+    if(s.kind==='result'){const lines=s._el.querySelectorAll('.line');lines.forEach((l,i)=>l.classList.toggle('on',reduced||t>=300+i*650));}
+    $('bar').style.width=((index+clamp(t/durationOf(s)))/track().stages.length*100)+'%';
+  }
+  function buildSheet(){
+    const input=excel.input, result=excel.result; if(!input||!result){$('sheetCommand').textContent='예시 데이터를 불러오지 못했습니다.';return;}
+    $('sheetCommand').textContent=request;
+    $('beforeName').textContent=input.fileName; $('afterName').textContent=result.fileName;
+    $('beforeLink').href='examples/'+encodeURIComponent(input.fileName); $('afterLink').href='examples/'+encodeURIComponent(result.fileName);
+    const src=input.sheets[0], sum=result.sheets.find(x=>x.name==='요약')||result.sheets[result.sheets.length-1];
+    const fill=(table,sh,isSum)=>{table.innerHTML='<tr>'+sh.headers.map(h=>`<th>${escape(String(h))}</th>`).join('')+'</tr>'+
+      sh.rows.map((r,i)=>`<tr data-p="${escape(String(r[0]))}"${isSum&&i===sh.rows.length-1?' class="total"':''}>`+r.map(v=>`<td>${v==null?'':typeof v==='number'?v.toLocaleString('ko-KR'):escape(String(v))}</td>`).join('')+'</tr>').join('');};
+    fill($('beforeTable'),src,false); fill($('afterTable'),sum,true);
+    sheet._sum=sum;
+  }
+  function renderSheet(){
+    const s=stage(), sum=sheet._sum; if(!sum) return;
+    const t=reducedQuery.matches?durationOf(s):elapsed, n=sum.rows.length;
+    const row=clamp(Math.floor(t/(durationOf(s)/n)),0,n-1), overall=row===n-1, product=String(sum.rows[row][0]);
+    $('afterTable').querySelectorAll('tr').forEach((tr,i)=>tr.querySelectorAll('td').forEach((td,c)=>td.classList.toggle('pick',i===row+1&&c===1)));
+    $('beforeTable').querySelectorAll('tr[data-p]').forEach(tr=>tr.classList.toggle('match',overall||tr.dataset.p===product));
+    $('bar').style.width=((index+clamp(t/durationOf(s)))/track().stages.length*100)+'%';
+  }
+  function controls(){
+    $('play').textContent=finished?'다시 재생':playing?'일시정지':'재생';
+    document.querySelectorAll('.mode').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.track===trackKey)));
+    $('badge').textContent=track().badge; $('purpose').innerHTML=track().purpose;
+  }
+  function schedule(){if(playing&&!finished&&!document.hidden&&!frame)frame=requestAnimationFrame(tick);}
+  function tick(now){
+    frame=0; if(!playing||document.hidden||finished){last=null;return;}
+    if(last!==null)elapsed+=now-last; last=now;
+    if(elapsed>=durationOf(stage())){
+      elapsed=durationOf(stage());render();
+      if(index<track().stages.length-1){show(index+1);return;}
+      finished=true;playing=false;controls();return;
+    }
+    render();schedule();
+  }
+  function setTrack(key){trackKey=key;playing=!reducedQuery.matches;show(0);history.replaceState(null,'','#'+key);}
+  document.querySelectorAll('.mode').forEach(b=>b.addEventListener('click',()=>setTrack(b.dataset.track)));
+  $('prev').addEventListener('click',()=>show(index-1));
+  $('next').addEventListener('click',()=>show(index+1));
+  $('play').addEventListener('click',()=>{if(finished){show(0);playing=true;}else playing=!playing;last=null;controls();schedule();});
+  $('replay').addEventListener('click',()=>{playing=true;show(0);});
+  document.addEventListener('visibilitychange',()=>{last=null;schedule();});
+  addEventListener('resize',()=>{fit();render();});
+  shot.addEventListener('error',()=>{viewport.hidden=true;$('screenError').hidden=false;playing=false;controls();});
+  window.__terminalGuide={get track(){return trackKey;},get step(){return index;},get playing(){return playing;},tracks:Object.fromEntries(Object.entries(tracks).map(([k,v])=>[k,v.stages.map(s=>({screen:s.screen||null,target:s.target||null,kind:s.kind,text:s.text}))])),setTrack,show};
+  // #plan or #plan-9 opens a track (and step) directly.
+  const [startTrack,startStep]=location.hash.slice(1).split('-');
+  trackKey=tracks[startTrack]?startTrack:'basic'; controls(); show((Number(startStep)||1)-1);
+})();
+</script>
+</body>
+</html>

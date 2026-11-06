@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <PlatformTarget>x64</PlatformTarget>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../StatusNotificationWindow.cs" Link="StatusNotificationWindow.cs" />
+    <Compile Include="../../AppMessageDialog.cs" Link="AppMessageDialog.cs" />
+    <None Include="../../MainWindow.cs" Link="MainWindow.source.cs" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../MainWindow.xaml" Link="MainWindow.xaml" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,17 @@
+{
+  "capturedAt": "2026-10-20",
+  "appVersion": "1.0.127",
+  "method": "Offscreen render of the real WPF windows (setup, main window in 일반/플랜/고급, new task dialog) from the current Release build in an isolated temporary workspace and data folder. No window was shown and no terminal, OpenCode or model process was started.",
+  "overlays": "Typing, dragging, clicks and terminal results are HTML overlays drawn by the guide; terminal output and the Excel result are instructional examples, not a recorded OpenCode run.",
+  "screens": [
+    "setup",
+    "setup-plan",
+    "setup-ready",
+    "empty",
+    "create",
+    "task",
+    "planmaker",
+    "basic",
+    "advanced"
+  ]
+}
