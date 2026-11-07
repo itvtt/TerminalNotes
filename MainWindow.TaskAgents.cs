@@ -9,7 +9,7 @@ namespace TerminalNotes;
 
 // 사용자 지시: 태스크마다 쓸 에이전트를 고른다(기본 OpenCode, Codex·Claude Code 선택). 고르면 태스크 행에 그 대표 아이콘이
 // 보이고, 언제든 바꿀 수 있다: 아이콘을 누르면 에이전트 아이콘들이 떠서 고르고, 우클릭 메뉴에서도 고른다. .env의
-// AGENT_SELECTION이 꺼져 있으면(사내 기본) 아이콘과 메뉴를 숨기고 모든 태스크가 OpenCode로 실행된다.
+// AGENT_SELECTION이 꺼져 있으면(기본) 아이콘과 메뉴를 숨기고 모든 태스크가 OpenCode로 실행된다.
 // A choice applies to the task's next terminal; a running one keeps its agent. Loop and PlanMaker need OpenCode.
 public partial class MainWindow
 {

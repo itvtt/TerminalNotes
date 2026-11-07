@@ -43,8 +43,8 @@ internal static partial class FakeNativeOpenCodeServer
             if (path == "/config")
             {
                 bool nativeDefault = File.Exists(Path.Combine(Environment.CurrentDirectory, ".fixture-plan-maker-native-model"));
-                object config = nativeDefault ? _planningInterviews.Count == 0 ? new { } : new { model = "company/changed-after-initial" }
-                    : new { model = "company/planning-alias" };
+                object config = nativeDefault ? _planningInterviews.Count == 0 ? new { } : new { model = "shared/changed-after-initial" }
+                    : new { model = "shared/planning-alias" };
                 await WriteJsonAsync(context.Response, HttpStatusCode.OK, config);
                 return true;
             }
@@ -124,7 +124,7 @@ internal static partial class FakeNativeOpenCodeServer
                 bool initialNative = nativeDefault && !_planningInterviews.ContainsKey(session.Id);
                 bool hasModel = body.RootElement.TryGetProperty("model", out var model);
                 if (initialNative ? hasModel : !hasModel ||
-                    model.GetProperty("providerID").GetString() != (nativeDefault ? "native-company" : "company") ||
+                    model.GetProperty("providerID").GetString() != (nativeDefault ? "native-shared" : "shared") ||
                     model.GetProperty("modelID").GetString() != (nativeDefault ? "deployment/native-default" : "planning-alias"))
                     throw new InvalidDataException("The planner must omit an unconfigured initial model and preserve the exact configured or native-selected alias on follow-up.");
                 string trace = Environment.GetEnvironmentVariable("TN_WORKFLOW_TRACE")!;
@@ -146,7 +146,7 @@ internal static partial class FakeNativeOpenCodeServer
                     session.Id + " " + messageId + "\n");
                 long created = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                 object userInfo = nativeDefault
-                    ? new { id = messageId, sessionID = session.Id, role = "user", time = new { created }, model = new { providerID = "native-company", modelID = "deployment/native-default" } }
+                    ? new { id = messageId, sessionID = session.Id, role = "user", time = new { created }, model = new { providerID = "native-shared", modelID = "deployment/native-default" } }
                     : new { id = messageId, sessionID = session.Id, role = "user", time = new { created } };
                 var user = new FakeMessage(messageId, userInfo, new[] { new { type = "text", text = prompt } });
                 lock (_gate) { session.Messages.Add(user); session.Status = "busy"; }

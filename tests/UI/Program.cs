@@ -2657,7 +2657,7 @@ internal static class Program
             string freshPlan=File.ReadAllText(Path.Combine(freshFull,"terminal-notes","plan.md"));
             Assert(freshPlan == "# added-full\n\n## 목표\n\n" &&
                 (string?)typeof(MainWindow).GetMethod("NewProjectPlan", BindingFlags.Static | BindingFlags.NonPublic)!
-                    .Invoke(null, ["goal-task", "사내 메모 앱 만들기\r\n- 빠른 검색"]) == "# goal-task\n\n## 목표\n\n사내 메모 앱 만들기\n- 빠른 검색\n",
+                    .Invoke(null, ["goal-task", "팀 메모 앱 만들기\r\n- 빠른 검색"]) == "# goal-task\n\n## 목표\n\n팀 메모 앱 만들기\n- 빠른 검색\n",
                 "a new task's plan holds only its basic goal" + $" (plan={freshPlan.ReplaceLineEndings("⏎")})");
             Assert(Field<string>(window, "_selectedProjectPath") == freshFull && taskRows.Contains(freshFull) &&
                 !Field<bool>(window, "_showArchivedTasks") && layout.Slots.SequenceEqual(fullSlots) &&
@@ -2946,7 +2946,7 @@ internal static class Program
                     (Func<string, CancellationToken, Task<string>>)(async (_, token) =>
                     {
                         await Task.Delay(6000, token);
-                        return "<<<TERMINALNOTES_PLAN>>>\n# 사내 메모 앱\n\n## 기능\n- C:\\Data\\notes에 마크다운 저장\n- 자동 저장 30초마다\n" +
+                        return "<<<TERMINALNOTES_PLAN>>>\n# 팀 메모 앱\n\n## 기능\n- C:\\Data\\notes에 마크다운 저장\n- 자동 저장 30초마다\n" +
                             "<<<END_TERMINALNOTES_PLAN>>>\n<<<TERMINALNOTES_REMOVED>>>\n- 원문: ㅇㅇ | 이유: 뜻 없는 문자열\n<<<END_TERMINALNOTES_REMOVED>>>";
                     }));
             string Status() => ((TextBlock)window.FindName("StatusLabel")).Text;

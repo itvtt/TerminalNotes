@@ -20,7 +20,7 @@ public sealed class UpdateAccessException(string repository, int status) : Inval
     $"업데이트 저장소({repository})에 접근할 수 없습니다 ({status}). .env의 UPDATE_TOKEN(읽기 권한)을 확인하세요.");
 
 /// <summary>
-/// Checks the latest GitHub release built by the in-house Actions runner, downloads its package,
+/// Checks the latest GitHub release built by the self-hosted Actions runner, downloads its package,
 /// and hands the file swap to a small updater that runs after this process exits.
 /// </summary>
 public sealed class UpdateService(UpdateSettings settings, HttpMessageHandler? handler = null)

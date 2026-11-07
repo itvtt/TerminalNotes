@@ -700,7 +700,7 @@ internal static class Program
             }
             await dialog.RefreshAsync();
 
-            // A GitHub (company Enterprise) link: the relay reads it, its heading gives the title, and the skill follows the file.
+            // A GitHub (or GitHub Enterprise) link: the relay reads it, its heading gives the title, and the skill follows the file.
             string site = Path.Combine(fixture, "github");
             string linkedFile = Path.Combine(site, "api", "v3", "repos", "team", "skills", "contents", "sql", "SKILL.md");
             Directory.CreateDirectory(Path.GetDirectoryName(linkedFile)!);
@@ -885,7 +885,7 @@ internal static class Program
             Require(!InstalledPlugins.List().ContainsKey(notify.Name) && File.Exists(Path.Combine(plugins, "own-plugin.ts")), "제거 left the plugin or took the user's file.");
             await pluginStore.DeleteAsync((await store.PluginsAsync(default)).Single(plugin => plugin.Name == notify.Name));
             Require((await store.PluginsAsync(default)).All(plugin => plugin.Name != notify.Name), "A master could not delete the plugin: " + pluginStore.StatusText);
-            // From a GitHub (company Enterprise) link: the window reads the .ts file, the plugin follows it, and the installed copy
+            // From a GitHub (or GitHub Enterprise) link: the window reads the .ts file, the plugin follows it, and the installed copy
             // takes a change when the window opens.
             string pluginSite = Path.Combine(fixture, "github-plugins");
             string pluginSource = Path.Combine(pluginSite, "api", "v3", "repos", "team", "plugins", "contents", "notify.ts");

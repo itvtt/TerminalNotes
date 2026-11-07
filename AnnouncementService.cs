@@ -357,7 +357,7 @@ internal sealed class AnnouncementRelayException(string message) : IOException(m
 /// <summary>The relay's shared board: GET with ETag (an unchanged board costs one short reply), PUT with the base revision.</summary>
 internal sealed class AnnouncementRelay
 {
-    // The relay is a PC on the company network: reached directly, never through the system proxy (which may not reach it and
+    // The relay is a PC on the local network: reached directly, never through the system proxy (which may not reach it and
     // answers 502 instead).
     private static readonly HttpClient SharedHttp = new(new HttpClientHandler { UseProxy = false }) { Timeout = TimeSpan.FromSeconds(15) };
     /// <summary>Sent with every relay request, so the relay's status page shows each PC's app version.</summary>

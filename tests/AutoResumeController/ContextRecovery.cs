@@ -3,8 +3,8 @@ using TerminalNotes.Services;
 
 internal static partial class Program
 {
-    private static readonly RecoveryModelSelection ContextWork = new("corporate-local", "work-model");
-    private static readonly RecoveryModelSelection ContextSummary = new("corporate-local", "configured-summary-model");
+    private static readonly RecoveryModelSelection ContextWork = new("shared-local", "work-model");
+    private static readonly RecoveryModelSelection ContextSummary = new("shared-local", "configured-summary-model");
 
     private sealed class ContextScenario : IDisposable
     {

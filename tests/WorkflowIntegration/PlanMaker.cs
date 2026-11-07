@@ -251,9 +251,9 @@ internal static partial class Program
                 foreach (string requestTrace in plannerRequestTraces)
                 {
                     using JsonDocument request = JsonDocument.Parse(await File.ReadAllTextAsync(requestTrace));
-                    Require(request.RootElement.GetProperty("model").GetProperty("providerID").GetString() == "company" &&
+                    Require(request.RootElement.GetProperty("model").GetProperty("providerID").GetString() == "shared" &&
                         request.RootElement.GetProperty("model").GetProperty("modelID").GetString() == "planning-alias",
-                        "A planner initial or continued native request replaced the configured company model alias.");
+                        "A planner initial or continued native request replaced the configured shared model alias.");
                 }
                 string retainedConversation = interviewMessages.GetRawText();
                 Require(!requests[1].GetProperty("parts")[0].GetProperty("text").GetString()!.Contains(nextGuidance, StringComparison.Ordinal),

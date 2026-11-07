@@ -8,7 +8,7 @@
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
     <PlatformTarget>x64</PlatformTarget>
-    <Version>1.1.2</Version>
+    <Version>1.1.3</Version>
     <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
     <DefaultItemExcludes>$(DefaultItemExcludes);relay\**;tests\**;artifacts\**;dist\**;TerminalEngine\**;TerminalTransport\**;TerminalDesktop\**;installer\**;out\**;build\**</DefaultItemExcludes>
     <DefineConstants>$(DefineConstants);TN_WPF</DefineConstants>
@@ -89,7 +89,7 @@
     </ItemGroup>
   </Target>
   <!-- AGENT_SELECTION=yes in .env lets each terminal use OpenCode, Claude Code or Codex (home build);
-       anything else keeps every terminal on OpenCode (in-house build). Written to features.json next to the app. -->
+       anything else keeps every terminal on OpenCode (default build). Written to features.json next to the app. -->
   <Target Name="WriteFeatureConfig" BeforeTargets="AssignTargetPaths">
     <ReadLinesFromFile File="$(MSBuildProjectDirectory)\.env" Condition="Exists('$(MSBuildProjectDirectory)\.env')">
       <Output TaskParameter="Lines" ItemName="_FeatureEnvLine" />
@@ -170,7 +170,7 @@
       <_UpdateToken Condition="'$(_UpdateToken)' != ''">$(_UpdateToken.Substring(13).Trim())</_UpdateToken>
       <_UpdateAsset Condition="'$(_UpdateAsset)' != ''">$(_UpdateAsset.Substring(13).Trim())</_UpdateAsset>
       <!-- On the Actions runner an empty UPDATE_REPOSITORY means "this repository": releases come from the same place. An
-           empty UPDATE_GITHUB_API there is the runner's own GitHub (the company Enterprise one in-house); off the runner the app
+           empty UPDATE_GITHUB_API there is the runner's own GitHub (an Enterprise server's own on an Enterprise runner); off the runner the app
            falls back to github.com. -->
       <_UpdateApi Condition="('$(_UpdateRepo)' == '' or '$(_UpdateApi)' == '') and '$(GITHUB_ACTIONS)' == 'true'">$(GITHUB_API_URL)</_UpdateApi>
       <_UpdateRepo Condition="'$(_UpdateRepo)' == '' and '$(GITHUB_ACTIONS)' == 'true'">$(GITHUB_REPOSITORY)</_UpdateRepo>

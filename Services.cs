@@ -4358,16 +4358,16 @@ public static class DiagnosticLogAnalyzer
             foreach (var e in entries.Where(e => e.Name is not ("auto_resume" or "resource_snapshot" or "daily_heartbeat")).TakeLast(8))
                 report.AppendLine($"{e.Time:MM-dd HH:mm:ss} UTC · {EventLabel(e.Name)} · {e.Stage}" + (e.Duration.HasValue ? $" · {e.Duration:0.0}초" : ""));
         }
-        else report.AppendLine("분석할 지원 이벤트가 없습니다. 회사에서 복사한 JSONL 파일을 불러오거나 앱을 사용한 뒤 새로고침하세요.");
+        else report.AppendLine("분석할 지원 이벤트가 없습니다. 다른 PC에서 복사한 JSONL 파일을 불러오거나 앱을 사용한 뒤 새로고침하세요.");
         foreach (string notice in notices) report.AppendLine(notice);
         AppendMemory(report, latestMemory, maximumLoad, memoryCount);
         report.AppendLine("\n해석과 확인 사항");
         report.AppendLine("응답 지연은 화면 응답 확인 신호가 늦어진 관측입니다. 절전·프로세스 일시 중단을 배제하지 못하며, 마지막 단계는 원인으로 확정할 수 없습니다.");
         report.AppendLine("터미널 번호·프로세스는 지연 도중 바뀔 수 있고 여러 앱 실행의 기록이 섞일 수 있어, 지연과 복구의 짝이나 현재 멈춤을 단정하지 않습니다.");
-        report.AppendLine("다른 창은 정상이고 터미널만 멈춘 경우, 출력 표시·입력 대기·OpenCode 연결을 별도로 확인해야 합니다. 회사 보안 정책이나 네트워크가 원인이라는 결론은 이 기록만으로 내릴 수 없습니다.");
+        report.AppendLine("다른 창은 정상이고 터미널만 멈춘 경우, 출력 표시·입력 대기·OpenCode 연결을 별도로 확인해야 합니다. 보안 정책이나 네트워크가 원인이라는 결론은 이 기록만으로 내릴 수 없습니다.");
         report.AppendLine(entries.Any(e => e.Name.StartsWith("daily_", StringComparison.Ordinal))
             ? "일일 로그에 기록된 앱 버전과 빌드 식별자는 실행 당시의 정보입니다. 현재 앱과 같은 빌드인지 비교하세요."
-            : "이 요약은 실행 컴퓨터나 앱 버전을 확인하지 않으므로, 현재 앱과 회사에서 실행한 앱이 같은 버전인지 별도로 확인하세요.");
+            : "이 요약은 실행 컴퓨터나 앱 버전을 확인하지 않으므로, 현재 앱과 기록을 남긴 PC의 앱이 같은 버전인지 별도로 확인하세요.");
         report.AppendLine("높은 메모리 사용률만으로 메모리 누수나 멈춤의 원인을 확정하지 않습니다. 여러 앱 실행을 이어 붙인 기록에서 사용량 증가 추세를 추정하지 않습니다.");
         report.AppendLine("요청문·플랜·인증 정보·원문 오류·파일 경로는 요약에 포함하지 않습니다.");
         return new(report.ToString(), partial, entries.Count, invalid);
@@ -5014,6 +5014,9 @@ public static class GlobalAgentInstructions
         // 2026-10-30 default before the skills and plugins section.
         "B48E3867EBAE2CED80A084F7A4DE73AA0009DC76AE408D477AB0F9D555DE1C17",
         "17FED6A7D92A8852D51036696D1AEF197E2E405A818F2B165AEDC0E27EEE1511",
+        // 2026-11-07 default before the wording cleanup (CRLF and LF).
+        "86D02C5EA7A8ABC2AAC21A1E2BA380275BD3A1C51CC5F4FB5BF00FABE68023D4",
+        "BB5765DE9E79781B91E0E045540A5FD9C29CB79A2900B4A3D9F86D8E609BF015",
     ];
 
     public static string FilePath => Path.Combine(DirectoryPath, "global-agent-instructions.md");
@@ -5238,7 +5241,7 @@ public static class GlobalAgentInstructions
         - 이 앱은 PC를 지키려고 태스크에서 실행한 프로그램의 메모리를 제한한다(PC 여유 메모리에 맞춰 바뀌고, 프로그램 하나는 RAM의 절반까지). MemoryError·out of memory·heap out of memory·메모리 할당 실패가 나면 같은 방식으로 다시 실행하지 말고 데이터를 나눠 처리하거나(청크·스트리밍) 필요한 열·행만 읽고 중간 결과를 파일로 넘겨 메모리를 줄인 뒤 다시 실행한다. 동시에 띄운 다른 무거운 프로그램이 있으면 먼저 끝낸다.
         - 새 패키지는 꼭 필요할 때만 추가하고, 이미 설치된 도구와 표준 기능을 먼저 쓴다. 네트워크·프록시·권한 문제로 설치가 실패하면 같은 설치를 반복하지 말고 대안을 찾거나 필요한 조치를 보고한다.
 
-        ## DRM이 걸린 회사 문서
+        ## DRM이 걸린 문서
 
         - DRM으로 보호된 Office 파일은 openpyxl·pandas·python-pptx 같은 라이브러리로 직접 열 수 없다. `File is not a zip file`이나 암호화·형식 오류가 나면 DRM을 의심하고, 실제 Office 앱을 띄워 연다.
         - DRM이 걸린 Excel 파일은 xlwings로만 열 수 있다. openpyxl·pandas·win32com 직접 호출 같은 다른 방법은 시도하지 말고 처음부터 xlwings로 연다(`xw.App(visible=False)` → `app.books.open(경로)`). 값과 서식도 xlwings로 읽고 쓰며, 결과는 새 파일로 저장하고 원본은 사용자가 요청한 경우에만 덮어쓴다.
@@ -5272,7 +5275,7 @@ public static class GlobalAgentInstructions
 
         ## 스킬과 플러그인
 
-        - 작업을 시작할 때 `skill` 도구에 나오는 스킬 목록을 확인한다. 요청과 맞는 스킬이 있으면 먼저 불러와 그 절차대로 작업한다. 스킬에 들어 있을 수 있는 회사 규칙이나 정해진 작업 방식을 추측으로 대신하지 않는다.
+        - 작업을 시작할 때 `skill` 도구에 나오는 스킬 목록을 확인한다. 요청과 맞는 스킬이 있으면 먼저 불러와 그 절차대로 작업한다. 스킬에 들어 있을 수 있는 조직 규칙이나 정해진 작업 방식을 추측으로 대신하지 않는다.
         - 스킬의 구체적인 절차는 이 지침의 일반 원칙보다 먼저 따른다. 사용자의 가장 최근 지시와 데이터 보호 규칙은 스킬보다 우선한다.
         - 맞는 스킬이 없으면 묻거나 기다리지 말고 그대로 진행한다. 스킬을 쓰면 마무리 보고에 이름을 적는다.
         - 플러그인은 OpenCode가 시작할 때 자동으로 실행되므로 따로 불러오지 않는다. 플러그인이 더해 준 도구가 작업에 맞으면 같은 기능을 새로 만들지 말고 그 도구를 쓴다.
@@ -9719,7 +9722,7 @@ public sealed partial class OpenCodeConversationClient
         Func<CancellationToken, Task<bool>> stillCurrent, CancellationToken token, TimeSpan? timeout = null)
     {
         using var bounded = CancellationTokenSource.CreateLinkedTokenSource(token);
-        // In-house models can take well over 30 seconds even for this short answer.
+        // Self-hosted models can take well over 30 seconds even for this short answer.
         bounded.CancelAfter(timeout ?? TimeSpan.FromSeconds(90));
         string? helper = null;
         string message = "msg_" + Guid.NewGuid().ToString("N");
@@ -9973,7 +9976,7 @@ public static class OpenCodeFailureClassifier
         if (error.Type is "RateLimitError" or "QuotaExceededError")
             return error.IsRetryable == true || error.RetryAfterUtc is not null || error.RetryAfterDelay is not null;
         if (error.Type is "NetworkError" or "ConnectionError" or "TimeoutError") return true;
-        // Gateways in front of a shared (in-house) model often report overload, request limits and dropped
+        // Gateways in front of a shared (self-hosted) model often report overload, request limits and dropped
         // connections only in the message text, under a generic error type or a wrong status/retry flag.
         return error.Type is "APIError" or "UnknownError" or "ProviderError" or "message_error" or "Error" &&
             LooksLikeBusyOrDroppedService(error.Message);
@@ -12989,7 +12992,7 @@ public sealed class OpenCodeRecoveryPolicy
 {
     public static readonly TimeSpan IdleSettlePeriod = TimeSpan.FromSeconds(20);
     // A model that sends nothing for minutes while OpenCode's busy timer keeps counting usually resumes after a
-    // cancel and resend (in-house services), so a response stall is cancelled and resent after 5 minutes.
+    // cancel and resend (self-hosted services), so a response stall is cancelled and resent after 5 minutes.
     public static readonly TimeSpan StalledSuspectPeriod = TimeSpan.FromMinutes(3);
     public static readonly TimeSpan StalledAbortPeriod = TimeSpan.FromMinutes(5);
     // A stuck app-launch command (dev server and the like) keeps the longer interval.
@@ -15838,7 +15841,7 @@ internal static class PlanMakerWorkflow
 
     // PlanMaker only needs the plan's structure and gist to avoid duplicate questions and reuse
     // headings; the host merges the delta into the full plan. Very long plans are shown abbreviated
-    // so the in-house model's context is not consumed before the interview starts.
+    // so the self-hosted model's context is not consumed before the interview starts.
     internal static string CompactPlanContext(string plan)
     {
         if (plan.Length <= PlanContextBudget) return plan;
@@ -20758,7 +20761,7 @@ public enum TerminalPermissionMode
 
 /// <summary>
 /// Build-time features from .env (features.json next to the app). AGENT_SELECTION=yes lets each terminal
-/// use OpenCode, Claude Code or Codex; anything else (the in-house default) keeps every terminal on OpenCode.
+/// use OpenCode, Claude Code or Codex; anything else (the default) keeps every terminal on OpenCode.
 /// </summary>
 public static class AppFeatures
 {

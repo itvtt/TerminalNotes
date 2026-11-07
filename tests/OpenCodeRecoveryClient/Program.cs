@@ -135,7 +135,7 @@ internal static class Program
         Require(evidence.HasErrorMarker && evidence.CurrentErrors.Single().Type == "tool_error" && !evidence.CurrentErrors.Single().IsToolExecutionError,
             "A native message error sharing the diagnostic tool error name was suppressed.");
 
-        // A shared in-house model behind a gateway: overload and dropped connections only in the message text.
+        // A shared self-hosted model behind a gateway: overload and dropped connections only in the message text.
         async Task<bool> Retries(string type, int? status, bool? isRetryable, string? message)
         {
             failureType = type; statusCode = status; retryable = isRetryable; errorMessage = message;

@@ -14,7 +14,8 @@ internal static class NativeContextRecovery
     // Explicit opt-in: --native-context-recovery uses the real native executable
     // and a localhost fake model. It supplies protocol/controller evidence only,
     // never real-model quality or overnight reliability evidence.
-    private const string Native = @"C:\Users\itvtt\AppData\Roaming\npm\node_modules\opencode-ai\node_modules\opencode-windows-x64\bin\opencode.exe";
+    private static readonly string Native = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        @"npm\node_modules\opencode-ai\node_modules\opencode-windows-x64\bin\opencode.exe");
     private const string Provider = "fixture";
     private const string Model = "context-fixture";
     private const string SummaryModel = "summary-fixture";

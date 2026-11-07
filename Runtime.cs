@@ -1742,7 +1742,7 @@ public partial class DiagnosticLogAnalysisDialog : Window
 /// <summary>Posts problem reports to the developer's relay (relay\relay.py).</summary>
 internal static class ReportRelayClient
 {
-    // The relay is a PC on the company network: reached directly, never through the system proxy (which may not reach it).
+    // The relay is a PC on the local network: reached directly, never through the system proxy (which may not reach it).
     private static readonly global::System.Net.Http.HttpClient Http = new(new global::System.Net.Http.HttpClientHandler { UseProxy = false })
         { Timeout = TimeSpan.FromSeconds(90) };
 

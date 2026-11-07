@@ -15,7 +15,7 @@ namespace TerminalNotes;
 // code: one .ts or .js file that OpenCode finds in its plugins folder (~/.config/opencode/plugins, checked with OpenCode 1.18.34)
 // and runs when it starts. Installing puts the store's file there, removing deletes it; both reach the next OpenCode terminal.
 // The store is the relay's /api/plugins; only master accounts (MASTER_USERS) share plugins, since they run on every PC.
-// A plugin shared from a GitHub (company Enterprise) link follows that file: the relay makes a new version when it changes, and
+// A plugin shared from a GitHub (or GitHub Enterprise) link follows that file: the relay makes a new version when it changes, and
 // this window takes it for the plugins installed from the store when it opens.
 
 /// <summary>A plugin in the store at its latest version; <see cref="Code"/> only when one plugin is fetched.</summary>

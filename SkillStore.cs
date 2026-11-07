@@ -87,7 +87,7 @@ internal sealed class SkillStoreException(string message, HttpStatusCode? status
 /// <summary>The relay's skill store: list, versions, download and share.</summary>
 internal sealed class SkillStoreClient
 {
-    // The relay is a PC on the company network: reached directly, never through the system proxy (which may not reach it and
+    // The relay is a PC on the local network: reached directly, never through the system proxy (which may not reach it and
     // answers 502 instead).
     private static readonly HttpClient SharedHttp = new(new HttpClientHandler { UseProxy = false }) { Timeout = TimeSpan.FromSeconds(20) };
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
@@ -184,7 +184,7 @@ internal sealed class SkillStoreClient
 
     private sealed record WithdrawnSkills(string[]? Withdrawn);
 
-    /// <summary>The text of the file a GitHub (or company GitHub Enterprise) link points at, read by the relay.</summary>
+    /// <summary>The text of the file a GitHub (or GitHub Enterprise) link points at, read by the relay.</summary>
     internal async Task<string> FetchSourceAsync(string link, CancellationToken token)
     {
         using var content = new StringContent(JsonSerializer.Serialize(new { source = link }, Json), Encoding.UTF8, "application/json");
@@ -223,7 +223,7 @@ internal sealed class SkillStoreClient
         return result?.Version is > 0 ? result.Version.Value : 1;
     }
 
-    /// <summary>The code of the .ts/.js file a GitHub (or company GitHub Enterprise) link points at, read by the relay.</summary>
+    /// <summary>The code of the .ts/.js file a GitHub (or GitHub Enterprise) link points at, read by the relay.</summary>
     internal async Task<(string Code, string Extension)> FetchPluginSourceAsync(string link, CancellationToken token)
     {
         using var content = new StringContent(JsonSerializer.Serialize(new { source = link }, Json), Encoding.UTF8, "application/json");
@@ -2221,7 +2221,7 @@ internal sealed record SkillSourceFile(string Label, string Stem, string Body, s
 
 /// <summary>Shares a skill with only its title typed, or — for the one who shared it — a new version. A category (one of the
 /// store's or a new one), 나만 보기 (only its author sees it) and the 출처 go with it. Below them the 텍스트, 파일 and 깃허브 tabs take the
-/// instructions as written text, a dropped or chosen file, or a GitHub (company Enterprise) link the relay reads and then
+/// instructions as written text, a dropped or chosen file, or a GitHub (or GitHub Enterprise) link the relay reads and then
 /// follows, so the skill updates itself when the file changes; the chosen tab is what is shared. The store name carries this
 /// PC's Windows account; a new version takes the next number unless the author writes a larger one.</summary>
 internal sealed class ShareSkillDialog : Window
