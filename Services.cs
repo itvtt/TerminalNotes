@@ -5021,7 +5021,13 @@ public static class GlobalAgentInstructions
 
     public static string FilePath => Path.Combine(DirectoryPath, "global-agent-instructions.md");
 
-    /// <summary>Creates the default file and upgrades only the user-approved previous contents.</summary>
+    /// <summary>Raised with the backup path when an account other than the master accounts had its own edits replaced by the
+    /// default (the edited text is kept in that backup). May be raised on a background thread.</summary>
+    public static event Action<string>? EditsReverted;
+
+    /// <summary>Creates the default file and upgrades only the user-approved previous contents. For accounts other than the
+    /// master accounts (InstructionEditors) any other contents also go back to the default, so a file edited outside the app
+    /// is not used either (2026-11-10 사용자: 설정 화면만이 아니라 파일을 직접 고치는 것도 막기).</summary>
     public static string EnsureFile()
     {
         Directory.CreateDirectory(DirectoryPath);
@@ -5035,39 +5041,105 @@ public static class GlobalAgentInstructions
         {
             // Another process created it, or the user already has customized instructions.
         }
-        UpgradeApprovedPreviousInstructions();
+        ReplaceWithDefault(IsApprovedPreviousInstructions, "before-approved-upgrade");
+        if (!InstructionEditors.Allowed) RestoreDefaultForThisAccount();
         return FilePath;
     }
 
-    private static void UpgradeApprovedPreviousInstructions()
+    private enum Replacement { Unchanged, Replaced, Busy }
+
+    private static Replacement RestoreDefaultForThisAccount()
     {
+        byte[] defaults = Utf8.GetBytes(DefaultContents);
+        var outcome = ReplaceWithDefault(bytes => !bytes.AsSpan().SequenceEqual(defaults), "before-default-restore", out string? backup);
+        if (outcome == Replacement.Replaced && backup is not null) EditsReverted?.Invoke(backup);
+        return outcome;
+    }
+
+    /// <summary>For accounts other than the master accounts, while the app runs: an edit, replacement or deletion of the file goes
+    /// back to the default within a second, so OpenCode (which reads the file on every request) does not use it. Null for the
+    /// master accounts.</summary>
+    public static IDisposable? GuardDefault()
+    {
+        if (InstructionEditors.Allowed) return null;
+        Directory.CreateDirectory(DirectoryPath);
+        var watcher = new FileSystemWatcher(DirectoryPath, Path.GetFileName(FilePath))
+        {
+            NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.Size,
+            IncludeSubdirectories = false
+        };
+        global::System.Threading.Timer? pending = null;
+        void Retry()
+        {
+            try { pending?.Change(1000, global::System.Threading.Timeout.Infinite); }
+            catch (ObjectDisposedException) { }
+        }
+        pending = new global::System.Threading.Timer(_ =>
+        {
+            try
+            {
+                if (!File.Exists(FilePath)) EnsureFile();
+                else if (RestoreDefaultForThisAccount() == Replacement.Busy) Retry();
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { Retry(); }
+        }, null, global::System.Threading.Timeout.Infinite, global::System.Threading.Timeout.Infinite);
+        global::System.Threading.Timer timer = pending;
+        void Schedule()
+        {
+            try { timer.Change(400, global::System.Threading.Timeout.Infinite); }
+            catch (ObjectDisposedException) { }
+        }
+        watcher.Changed += (_, _) => Schedule();
+        watcher.Created += (_, _) => Schedule();
+        watcher.Deleted += (_, _) => Schedule();
+        watcher.Renamed += (_, _) => Schedule();
+        watcher.EnableRaisingEvents = true;
+        return new Guard(watcher, timer);
+    }
+
+    private sealed class Guard(FileSystemWatcher watcher, global::System.Threading.Timer timer) : IDisposable
+    {
+        public void Dispose()
+        {
+            watcher.EnableRaisingEvents = false;
+            watcher.Dispose();
+            timer.Dispose();
+        }
+    }
+
+    private static Replacement ReplaceWithDefault(Func<byte[], bool> shouldReplace, string backupKind) =>
+        ReplaceWithDefault(shouldReplace, backupKind, out _);
+
+    private static Replacement ReplaceWithDefault(Func<byte[], bool> shouldReplace, string backupKind, out string? backupPath)
+    {
+        backupPath = null;
         try
         {
             using var lockStream = new FileStream(LockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
             using var instructions = new FileStream(FilePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
             byte[] originalBytes = ReadAllBytes(instructions);
-            if (!IsApprovedPreviousInstructions(originalBytes)) return;
+            if (!shouldReplace(originalBytes)) return Replacement.Unchanged;
 
-            string backupPath = FilePath + ".before-approved-upgrade." + Guid.NewGuid().ToString("N") + ".md";
+            string backup = FilePath + "." + backupKind + "." + Guid.NewGuid().ToString("N") + ".md";
             bool backupComplete = false;
             bool backupCreated = false;
             bool mutationStarted = false;
             try
             {
-                using (var backup = new FileStream(backupPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                using (var backupStream = new FileStream(backup, FileMode.CreateNew, FileAccess.Write, FileShare.None))
                 {
                     backupCreated = true;
-                    backup.Write(originalBytes);
-                    backup.Flush(flushToDisk: true);
+                    backupStream.Write(originalBytes);
+                    backupStream.Flush(flushToDisk: true);
                 }
                 backupComplete = true;
 
-                // Keep the target exclusively open from the hash
-                // check through the durable backup and replacement write.
-                if (!IsApprovedPreviousInstructions(ReadAllBytes(instructions)))
+                // Keep the target exclusively open from the check
+                // through the durable backup and replacement write.
+                if (!shouldReplace(ReadAllBytes(instructions)))
                 {
-                    TryDelete(backupPath);
-                    return;
+                    TryDelete(backup);
+                    return Replacement.Unchanged;
                 }
                 byte[] replacement = Utf8.GetBytes(DefaultContents);
                 instructions.Position = 0;
@@ -5077,25 +5149,31 @@ public static class GlobalAgentInstructions
                 instructions.Flush(flushToDisk: true);
                 if (!ReadAllBytes(instructions).AsSpan().SequenceEqual(replacement))
                     throw new IOException("The global instruction replacement could not be verified.");
+                backupPath = backup;
+                return Replacement.Replaced;
             }
             catch (IOException)
             {
                 if (mutationStarted) RestoreOriginalInstructions(instructions, originalBytes);
-                if (backupCreated && !backupComplete) TryDelete(backupPath);
+                if (backupCreated && !backupComplete) TryDelete(backup);
+                return Replacement.Busy;
             }
             catch (UnauthorizedAccessException)
             {
                 if (mutationStarted) RestoreOriginalInstructions(instructions, originalBytes);
-                if (backupCreated && !backupComplete) TryDelete(backupPath);
+                if (backupCreated && !backupComplete) TryDelete(backup);
+                return Replacement.Busy;
             }
         }
         catch (IOException)
         {
             // A busy or unavailable instruction file must not prevent startup.
+            return Replacement.Busy;
         }
         catch (UnauthorizedAccessException)
         {
             // A read-only or externally locked instruction file is left untouched.
+            return Replacement.Busy;
         }
     }
 
@@ -15436,6 +15514,9 @@ internal static class PlanMakerInstructions
 
     internal static string ReadCurrent()
     {
+        // Accounts other than the master accounts (InstructionEditors) use the shipped default only, even if the file was
+        // edited outside the app (2026-11-10 사용자). The app is the only reader of this file, so it is left as it is.
+        if (!InstructionEditors.Allowed) return DefaultContents;
         try
         {
             using var current = new FileStream(FilePath, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);

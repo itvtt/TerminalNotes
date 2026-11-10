@@ -33,6 +33,7 @@ using global::TerminalNotes.Services;
 public partial class App : Application
 {
     private AppInstanceCoordinator? _instance;
+    private IDisposable? _instructionsGuard;
     private bool _diagnosticsStarted;
     private bool _fatalExceptionObserved;
 
@@ -89,11 +90,26 @@ public partial class App : Application
             };
             TaskScheduler.UnobservedTaskException += (_, args) =>
                 ApplicationDiagnostics.RecordException("unobserved_task_exception", args.Exception);
+            // Accounts other than the master accounts use the default Terminal Notes instructions only: edits made to the file
+            // go back to the default (kept in a backup), and the user is told where personal instructions belong.
+            GlobalAgentInstructions.EditsReverted += backup => Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.ApplicationIdle, () =>
+            {
+                if (MainWindow is not { } owner) return;
+                AppMessageDialog.ShowError(owner, "전역 지침을 기본값으로 되돌렸습니다",
+                    "Terminal Notes 전역 지침은 마스터 계정만 고칠 수 있어 기본값으로 되돌렸습니다.\n\n" +
+                    "내 지침은 작업 설정 → OpenCode 지침에 쓰세요. Terminal Notes 안과 밖의 OpenCode 모두에 적용됩니다.\n\n" +
+                    "고쳤던 내용은 다음 파일에 보관했습니다:\n" + backup);
+            });
             try { GlobalAgentInstructions.EnsureFile(); }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
                 ApplicationDiagnostics.RecordException("global_instructions_unavailable", exception);
                 // A busy instruction store can be retried when the editor or a terminal opens.
+            }
+            try { _instructionsGuard = GlobalAgentInstructions.GuardDefault(); }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
+            {
+                ApplicationDiagnostics.RecordException("global_instructions_unavailable", exception);
             }
             var window = new TerminalNotes.MainWindow();
             MainWindow = window;
@@ -127,6 +143,7 @@ public partial class App : Application
         {
             var window = MainWindow as TerminalNotes.MainWindow;
             window?.DisposeResources();
+            _instructionsGuard?.Dispose();
             _instance?.Dispose();
             base.OnExit(e);
             if (_diagnosticsStarted)

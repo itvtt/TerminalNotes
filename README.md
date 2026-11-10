@@ -118,7 +118,7 @@ TUI 시작 중 일시적인 연결 오류에는 안전한 상태 조회와 기�
 
 **작업 설정 → OpenCode 지침**은 OpenCode 자체 전역 지침(`~/.config/opencode/AGENTS.md`, `XDG_CONFIG_HOME`이 있으면 그 아래)을 고칩니다. 모든 계정이 쓰며, Terminal Notes 밖에서 실행한 OpenCode에도 적용됩니다. 앱은 이 파일을 이 편집기에서 저장할 때만 쓰고, 업데이트가 건드리지 않습니다. Terminal Notes 안의 OpenCode는 이 지침과 아래 Terminal Notes 지침(전역·플랜메이커)을 함께 받습니다(OpenCode가 지침 목록을 합침). 이 파일이 없으면 OpenCode는 `~/.claude/CLAUDE.md`를 대신 읽으므로, 그 파일이 있는 PC에서는 편집 창이 이를 알려 줍니다. 저장하면 그 대신 이 파일을 읽습니다(CLAUDE.md는 그대로).
 
-**전역 지침**과 **플랜메이커 지침**은 Terminal Notes가 기본값을 주고 앱 업데이트로 고쳐 나가는 지침이라 `MASTER_USERS` 마스터 계정만 편집합니다. 다른 계정의 PC는 손대지 않은 기본값을 쓰므로 업데이트 때마다 새 기본값을 받습니다. 예전에 직접 고친 파일은 그대로 남아 계속 쓰입니다.
+**전역 지침**과 **플랜메이커 지침**은 Terminal Notes가 기본값을 주고 앱 업데이트로 고쳐 나가는 지침이라 `MASTER_USERS` 마스터 계정만 편집합니다. 다른 계정은 파일을 직접 고쳐도 쓰이지 않고 늘 기본값을 쓰므로, 업데이트 때마다 새 기본값을 받습니다. 전역 지침 파일(OpenCode가 요청마다 읽음)은 앱을 켤 때와 터미널을 열 때, 앱이 켜져 있는 동안에는 고치거나 지우는 즉시(1초 안) 기본값으로 되돌리고, 고쳤던 내용은 같은 폴더의 `global-agent-instructions.md.before-default-restore.<번호>.md`에 보관한 뒤 "내 지침은 OpenCode 지침에 쓰라"고 알립니다. 플랜메이커 지침은 앱만 읽으므로 파일은 그대로 두고 기본값만 씁니다.
 
 마스터 계정은 제목 표시줄의 **작업 설정(톱니바퀴) → 전역 지침 편집**에서 공통 Markdown을 수정·추가·저장합니다. 긴 문장은 편집기 너비에 맞춰 자동으로 줄바꿈되며, 하단 상태표시줄에서 편집 중·저장 완료·저장 충돌을 구분합니다. 상단의 최소화·최대화·닫기 버튼으로 창을 조절할 수 있습니다. 기본 경로는 `%LOCALAPPDATA%\TerminalNotes\Instructions\global-agent-instructions.md`입니다. 일반 Markdown 편집기로 수정해도 됩니다.
 

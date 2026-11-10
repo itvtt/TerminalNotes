@@ -64,9 +64,71 @@ internal static class SettingsEditorChecks
             RenderEditor(planner, evidence, "plan-maker-instructions-minimum");
             VerifySettingsLayout(evidence);
             VerifyOpenCodeInstructions(owner, evidence);
+            VerifyNonMasterInstructions();
             Console.WriteLine("PASS actual global/planner editor routing, saves, external conflicts, length errors, wrap/chrome/footer and settings button.");
         }
         finally { global.Close(); planner.Close(); }
+    }
+
+    // Accounts other than the master accounts use the shipped Terminal Notes instructions even when the files are edited by hand;
+    // the master accounts keep their edits.
+    private static void VerifyNonMasterInstructions()
+    {
+        string global = GlobalAgentInstructions.FilePath;
+        string planner = PlanMakerInstructions.FilePath;
+        var reverted = new List<string>();
+        void Record(string backup) { lock (reverted) reverted.Add(backup); }
+        GlobalAgentInstructions.EditsReverted += Record;
+        IDisposable? guard = null;
+        try
+        {
+            InstructionEditors.AccountOverride = () => @"PC\test_01";
+            Require(GlobalAgentInstructions.GuardDefault() is null, "A master account got the default-only guard.");
+            File.WriteAllText(global, "# master edit");
+            File.WriteAllText(planner, "# master planner edit");
+            GlobalAgentInstructions.EnsureFile();
+            Require(File.ReadAllText(global) == "# master edit" && PlanMakerInstructions.ReadCurrent() == "# master planner edit" && reverted.Count == 0,
+                "A master account's own instructions were replaced.");
+
+            File.Delete(global);
+            GlobalAgentInstructions.EnsureFile();
+            byte[] defaults = File.ReadAllBytes(global);
+
+            InstructionEditors.AccountOverride = () => @"PC\someone";
+            File.WriteAllText(global, "# my own rules\nUse English.");
+            GlobalAgentInstructions.EnsureFile();
+            Require(File.ReadAllBytes(global).AsSpan().SequenceEqual(defaults) && reverted.Count == 1 &&
+                File.ReadAllText(reverted[0]) == "# my own rules\nUse English." && reverted[0].Contains(".before-default-restore.", StringComparison.Ordinal),
+                "Another account's hand-edited global instructions were used, or the edit was not kept in a backup.");
+            Require(PlanMakerInstructions.ReadCurrent() == PlanMakerInstructions.DefaultContents && File.ReadAllText(planner) == "# master planner edit",
+                "Another account used an edited plan maker instructions file.");
+
+            guard = GlobalAgentInstructions.GuardDefault();
+            Require(guard is not null, "Another account got no guard while the app runs.");
+            File.WriteAllText(global, "# edited while running");
+            Require(WaitUntil(() => File.Exists(global) && File.ReadAllBytes(global).AsSpan().SequenceEqual(defaults)) && WaitUntil(() => reverted.Count == 2),
+                "An edit made while the app runs was not put back to the default.");
+            File.Delete(global);
+            Require(WaitUntil(() => File.Exists(global) && File.ReadAllBytes(global).AsSpan().SequenceEqual(defaults)),
+                "A deleted global instructions file was not recreated with the default.");
+        }
+        finally
+        {
+            guard?.Dispose();
+            GlobalAgentInstructions.EditsReverted -= Record;
+            InstructionEditors.AccountOverride = null;
+        }
+    }
+
+    private static bool WaitUntil(Func<bool> condition)
+    {
+        for (int attempt = 0; attempt < 100; attempt++)
+        {
+            try { if (condition()) return true; }
+            catch (IOException) { }
+            Thread.Sleep(50);
+        }
+        return false;
     }
 
     // OpenCode 지침 edits OpenCode's own AGENTS.md (an isolated config folder here, never the real ~/.config/opencode).
