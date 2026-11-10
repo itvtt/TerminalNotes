@@ -37,9 +37,14 @@ internal static class Program
                 Check(settings.MaxWidth < double.PositiveInfinity && settings.MaxHeight < double.PositiveInfinity,
                     "settings size is bounded by the current monitor work area");
                 CheckFooter(settings, footer);
+                CheckLabel(settings, "EditOpenCodeInstructionsButton", "OpenCode 지침 편집");
                 CheckLabel(settings, "EditGlobalInstructionsButton", "전역 지침 편집");
                 CheckLabel(settings, "EditPlanMakerInstructionsButton", "플랜메이커 지침 편집");
                 CheckLabel(settings, "EditOpenCodeConfigButton", "OpenCode 설정 편집");
+                Check(((FrameworkElement)settings.FindName("GlobalInstructionsRow")).IsVisible &&
+                    ((FrameworkElement)settings.FindName("PlanMakerInstructionsRow")).IsVisible,
+                    "the test host (like a master account) sees every instruction editor");
+                await VerifyInstructionRightsAsync(artifacts);
                 string[] settingsText = TextBlocks(settings).Select(text => text.Text).ToArray();
                 Check(settingsText.Contains("OpenCode 설치") &&
                     !settingsText.Any(text => text.Contains("WSL", StringComparison.OrdinalIgnoreCase)),
@@ -112,6 +117,14 @@ internal static class Program
                     CheckEditor(editor.Window, "OpenCode 설정");
                     SaveImage(editor.Window, Path.Combine(artifacts, "opencode-config.png"));
                 }
+                using (var editor = new WindowScope(GlobalAgentInstructionsDialog.CreateOpenCodeInstructions()))
+                {
+                    CheckEditor(editor.Window, "OpenCode 지침");
+                    Check(((TextBlock)editor.Window.FindName("PathText")).Text == TerminalNotes.Services.OpenCodeAgentInstructions.FilePath &&
+                        ((TextBox)editor.Window.FindName("InstructionsInput")).Text == TerminalNotes.Services.OpenCodeAgentInstructions.ReadCurrent(),
+                        "OpenCode 지침 opens OpenCode's own AGENTS.md");
+                    SaveImage(editor.Window, Path.Combine(artifacts, "opencode-instructions.png"));
+                }
                 Check(GlobalAgentInstructions.SaveCount == 0, "opening instruction editors never writes instructions");
                 AutoInstall.Reset(installed: false);
                 installer.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
@@ -127,6 +140,40 @@ internal static class Program
         }));
         app.Run();
         return exitCode;
+    }
+
+    private static async Task VerifyInstructionRightsAsync(string artifacts)
+    {
+        // Other accounts edit only OpenCode's own instructions; the master accounts (MASTER_USERS, default test_01…) all three.
+        foreach ((string account, bool master) in new[] { (@"PC\someone", false), (@"PC\test_01", true) })
+        {
+            TerminalNotes.Services.InstructionEditors.AccountOverride = () => account;
+            var dialog = new TerminalProfilesDialog(Path.Combine(artifacts, "rights"), true,
+                diagnosticSettingsPath: Path.Combine(artifacts, "rights-settings.json"));
+            try
+            {
+                ShowVirtual(dialog);
+                await Flush();
+                bool global = ((FrameworkElement)dialog.FindName("GlobalInstructionsRow")).IsVisible;
+                bool planner = ((FrameworkElement)dialog.FindName("PlanMakerInstructionsRow")).IsVisible;
+                Check(((Button)dialog.FindName("EditOpenCodeInstructionsButton")).IsVisible &&
+                    ((Button)dialog.FindName("EditOpenCodeConfigButton")).IsVisible && global == master && planner == master,
+                    master ? "a master account sees OpenCode 지침, 전역 지침 and 플랜메이커 지침"
+                        : "another account sees only OpenCode 지침 (and OpenCode 설정)");
+                if (!master)
+                {
+                    int saves = GlobalAgentInstructions.SaveCount;
+                    typeof(TerminalProfilesDialog).GetMethod("EditGlobalInstructionsButton_Click", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                        .Invoke(dialog, [dialog, new RoutedEventArgs()]);
+                    typeof(TerminalProfilesDialog).GetMethod("EditPlanMakerInstructionsButton_Click", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                        .Invoke(dialog, [dialog, new RoutedEventArgs()]);
+                    Check(Application.Current.Windows.OfType<GlobalAgentInstructionsDialog>().Any() == false && GlobalAgentInstructions.SaveCount == saves,
+                        "another account cannot open the Terminal Notes instruction editors even through their handlers");
+                }
+                SaveImage(dialog, Path.Combine(artifacts, master ? "settings-master.png" : "settings-user.png"));
+            }
+            finally { dialog.Close(); TerminalNotes.Services.InstructionEditors.AccountOverride = null; }
+        }
     }
 
     private static async Task VerifyFirstRunModeOptionsAsync(string artifacts)
@@ -318,6 +365,15 @@ namespace TerminalNotes.Services
         internal static string Description => "";
         internal static string FilePath => "isolated-opencode.jsonc";
         internal static string ReadCurrent() => "{ }";
+        internal static GlobalAgentInstructions.SaveResult TrySave(string expected, string contents) => GlobalAgentInstructions.TrySave(expected, contents);
+    }
+
+    internal static class OpenCodeAgentInstructions
+    {
+        internal const string Title = "OpenCode 지침";
+        internal static string Description => "Terminal Notes 밖에서 쓰는 OpenCode에도 적용합니다.";
+        internal static string FilePath => "isolated-opencode-AGENTS.md";
+        internal static string ReadCurrent() => "기존 OpenCode 지침 내용";
         internal static GlobalAgentInstructions.SaveResult TrySave(string expected, string contents) => GlobalAgentInstructions.TrySave(expected, contents);
     }
 }

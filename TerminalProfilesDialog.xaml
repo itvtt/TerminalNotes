@@ -424,8 +424,24 @@
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
                     <StackPanel>
+                        <TextBlock Text="OpenCode 지침" FontWeight="SemiBold"/>
+                        <TextBlock Text="OpenCode 자체 지침 · Terminal Notes 밖에서도 적용"
+                                   Foreground="{StaticResource Muted}" FontSize="13" TextWrapping="Wrap" Margin="2,4,0,0"/>
+                    </StackPanel>
+                    <Button x:Name="EditOpenCodeInstructionsButton" Grid.Column="1" Content="지침 편집"
+                            Click="EditOpenCodeInstructionsButton_Click" AutomationProperties.Name="OpenCode 지침 편집"
+                            ToolTip="OpenCode 지침 편집"
+                            Width="176" VerticalAlignment="Center" Margin="16,0,0,0"/>
+                </Grid>
+                <!-- 전역 지침·플랜메이커 지침: master accounts only (InstructionEditors). -->
+                <Grid x:Name="GlobalInstructionsRow" Margin="0,18,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel>
                         <TextBlock Text="전역 지침" FontWeight="SemiBold"/>
-                        <TextBlock Text="모든 OpenCode·CMD 세션에 적용"
+                        <TextBlock Text="Terminal Notes의 모든 OpenCode·CMD 세션에 적용"
                                    Foreground="{StaticResource Muted}" FontSize="13" TextWrapping="Wrap" Margin="2,4,0,0"/>
                     </StackPanel>
                     <Button x:Name="EditGlobalInstructionsButton" Grid.Column="1" Content="지침 편집"
@@ -433,7 +449,7 @@
                             ToolTip="전역 지침 편집"
                             Width="176" VerticalAlignment="Center" Margin="16,0,0,0"/>
                 </Grid>
-                <Grid Margin="0,18,0,0">
+                <Grid x:Name="PlanMakerInstructionsRow" Margin="0,18,0,0">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>

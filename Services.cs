@@ -5388,6 +5388,76 @@ internal static class OpenCodeConfigFile
         }
     }
 }
+
+/// <summary>OpenCode's own global instructions, &lt;XDG_CONFIG_HOME or ~/.config&gt;/opencode/AGENTS.md (2026-11-10 사용자: "사용자는
+/// opencode 지침만 수정하게 설정에서 기능을 하나 추가하고 마스터인 경우에만 opencode 지침, 터미널 노트 전역지침, 플랜메이커 전역지침
+/// 이렇게 수정되게 해"). Every account edits this one; the app never writes it otherwise. OpenCode reads it inside and outside
+/// Terminal Notes, together with the Terminal Notes instructions it is given. Without this file OpenCode falls back to
+/// ~/.claude/CLAUDE.md (checked with OpenCode 1.18.34), so creating it replaces that fallback.</summary>
+internal static class OpenCodeAgentInstructions
+{
+    internal const string Title = "OpenCode 지침";
+    private static readonly UTF8Encoding Utf8 = new(encoderShouldEmitUTF8Identifier: false);
+
+    // Same folder as OpenCodeConfigFile: OpenCode reads <XDG_CONFIG_HOME or ~/.config>/opencode; tests point this elsewhere.
+    private static string FolderPath => AppContext.GetData("TerminalNotes.OpenCodeConfigDirectory") is string test
+        ? Path.GetFullPath(test)
+        : Path.Combine(Environment.GetEnvironmentVariable("XDG_CONFIG_HOME") is { Length: > 0 } config
+            ? config : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config"), "opencode");
+
+    internal static string FilePath => Path.Combine(FolderPath, "AGENTS.md");
+
+    private static string ClaudeFallbackPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "CLAUDE.md");
+
+    private static bool ClaudeFallbackDisabled =>
+        new[] { "OPENCODE_DISABLE_CLAUDE_CODE", "OPENCODE_DISABLE_CLAUDE_CODE_PROMPT" }.Any(name =>
+            Environment.GetEnvironmentVariable(name) is { } value && (value == "1" || value.Equals("true", StringComparison.OrdinalIgnoreCase)));
+
+    internal static string Description
+    {
+        get
+        {
+            const string purpose = "Terminal Notes 밖에서 쓰는 OpenCode에도 적용합니다. Terminal Notes 안에서는 Terminal Notes 지침과 함께 쓰입니다.";
+            return !File.Exists(FilePath) && !ClaudeFallbackDisabled && File.Exists(ClaudeFallbackPath)
+                ? purpose + " 지금은 이 파일이 없어 OpenCode가 ~/.claude/CLAUDE.md를 읽습니다. 저장하면 그 대신 이 파일을 읽습니다(CLAUDE.md는 그대로)."
+                : purpose;
+        }
+    }
+
+    internal static string ReadCurrent()
+    {
+        string path = FilePath;
+        return File.Exists(path) ? File.ReadAllText(path) : string.Empty;
+    }
+
+    /// <summary>A file changed since it was opened is not overwritten; saving unchanged text writes nothing (so opening and saving
+    /// an empty editor does not create the file and hide the CLAUDE.md fallback).</summary>
+    internal static GlobalAgentInstructions.SaveResult TrySave(string expectedContents, string newContents)
+    {
+        ArgumentNullException.ThrowIfNull(expectedContents);
+        ArgumentNullException.ThrowIfNull(newContents);
+        string path = FilePath, temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            string current = ReadCurrent();
+            if (!string.Equals(current, expectedContents, StringComparison.Ordinal)) return GlobalAgentInstructions.SaveResult.Conflict;
+            if (string.Equals(current, newContents, StringComparison.Ordinal)) return GlobalAgentInstructions.SaveResult.Saved;
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllText(temporary, newContents, Utf8);
+            if (File.Exists(path)) File.Replace(temporary, path, destinationBackupFileName: null);
+            else File.Move(temporary, path);
+            return GlobalAgentInstructions.SaveResult.Saved;
+        }
+        catch (IOException) { return GlobalAgentInstructions.SaveResult.Busy; }
+        catch (UnauthorizedAccessException) { return GlobalAgentInstructions.SaveResult.Busy; }
+        finally
+        {
+            try { File.Delete(temporary); }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
+    }
+}
 }
 #endregion
 #endif
@@ -20734,6 +20804,28 @@ internal static class LoopAutoRecommandUsers
         string name = account[(account.LastIndexOf('\\') + 1)..];
         return AllowedUsers.Any(user => string.Equals(name, user, StringComparison.OrdinalIgnoreCase));
     }
+
+    private static string CurrentAccount()
+    {
+        using var identity = global::System.Security.Principal.WindowsIdentity.GetCurrent();
+        return identity.Name;
+    }
+}
+
+/// <summary>
+/// Who edits the Terminal Notes instructions (전역 지침, 플랜메이커 지침) in 작업 설정: the master accounts (MASTER_USERS in .env, the
+/// same list as Loop's). 2026-11-10 사용자: "사용자는 opencode 지침만 수정하게 … 마스터인 경우에만 opencode 지침, 터미널 노트 전역지침,
+/// 플랜메이커 전역지침 이렇게 수정되게 해". Other accounts edit only OpenCode's own AGENTS.md (OpenCode 지침), so their Terminal Notes
+/// instructions stay the shipped defaults and follow app updates. Test hosts (another entry assembly) keep the editors unless a
+/// test forces an account.
+/// </summary>
+internal static class InstructionEditors
+{
+    internal static Func<string>? AccountOverride = null;
+    private static readonly Lazy<bool> CurrentAllowed = new(() =>
+        !string.Equals(global::System.Reflection.Assembly.GetEntryAssembly()?.GetName().Name, "TerminalNotes", StringComparison.OrdinalIgnoreCase) ||
+        LoopAutoRecommandUsers.IsAllowedUser(CurrentAccount()));
+    internal static bool Allowed => AccountOverride is { } account ? LoopAutoRecommandUsers.IsAllowedUser(account()) : CurrentAllowed.Value;
 
     private static string CurrentAccount()
     {

@@ -2041,6 +2041,10 @@ public partial class GlobalAgentInstructionsDialog : Window
         OpenCodeConfigFile.FilePath, OpenCodeConfigFile.ReadCurrent, OpenCodeConfigFile.TrySave,
         "새로 여는 OpenCode 터미널부터 적용됩니다.", OpenCodeConfigFile.Title, maximumLength: 0);
 
+    internal static GlobalAgentInstructionsDialog CreateOpenCodeInstructions() => new(OpenCodeAgentInstructions.Title, OpenCodeAgentInstructions.Title,
+        OpenCodeAgentInstructions.Description, OpenCodeAgentInstructions.FilePath, OpenCodeAgentInstructions.ReadCurrent, OpenCodeAgentInstructions.TrySave,
+        "새 OpenCode 요청부터 적용됩니다.", OpenCodeAgentInstructions.Title, maximumLength: 0);
+
     internal GlobalAgentInstructionsDialog(string title, string heading, string description, string path,
         Func<string> readInstructions, Func<string, string, GlobalAgentInstructions.SaveResult> saveInstructions,
         string applicationTiming, string instructionLabel, int maximumLength)
@@ -3681,6 +3685,12 @@ public partial class TerminalProfilesDialog : Window
             AdvancedWorkModeDescription.Text = "여러 태스크·터미널을 동시에 실행";
             System.Windows.Automation.AutomationProperties.SetHelpText(AdvancedWorkModeRadio, "3단계 · 여러 터미널 동시 실행");
         }
+        // Only the master accounts edit the Terminal Notes instructions; everyone edits OpenCode's own (OpenCode 지침).
+        if (!global::TerminalNotes.Services.InstructionEditors.Allowed)
+        {
+            GlobalInstructionsRow.Visibility = Visibility.Collapsed;
+            PlanMakerInstructionsRow.Visibility = Visibility.Collapsed;
+        }
         // The work folder defaults to C:\opencode (first run too); ‘찾아보기…’ picks another one.
         DefaultWorkspaceInput.Text = firstRun || string.IsNullOrWhiteSpace(defaultWorkspace)
             ? FallbackWorkspace
@@ -3838,8 +3848,23 @@ public partial class TerminalProfilesDialog : Window
         dialog.ShowDialog();
     }
 
+    private void EditOpenCodeInstructionsButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var dialog = GlobalAgentInstructionsDialog.CreateOpenCodeInstructions();
+            dialog.Owner = this;
+            dialog.ShowDialog();
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            WorkspaceErrorText.Text = "OpenCode 지침 파일을 열지 못했습니다 · " + exception.Message;
+        }
+    }
+
     private void EditGlobalInstructionsButton_Click(object sender, RoutedEventArgs e)
     {
+        if (!global::TerminalNotes.Services.InstructionEditors.Allowed) return;
         try
         {
             var dialog = new GlobalAgentInstructionsDialog { Owner = this };
@@ -3853,6 +3878,7 @@ public partial class TerminalProfilesDialog : Window
 
     private void EditPlanMakerInstructionsButton_Click(object sender, RoutedEventArgs e)
     {
+        if (!global::TerminalNotes.Services.InstructionEditors.Allowed) return;
         try
         {
             var dialog = GlobalAgentInstructionsDialog.CreatePlanMaker();

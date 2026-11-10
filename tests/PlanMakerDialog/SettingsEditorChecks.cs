@@ -63,9 +63,52 @@ internal static class SettingsEditorChecks
             RenderEditor(global, evidence, "global-instructions-minimum");
             RenderEditor(planner, evidence, "plan-maker-instructions-minimum");
             VerifySettingsLayout(evidence);
+            VerifyOpenCodeInstructions(owner, evidence);
             Console.WriteLine("PASS actual global/planner editor routing, saves, external conflicts, length errors, wrap/chrome/footer and settings button.");
         }
         finally { global.Close(); planner.Close(); }
+    }
+
+    // OpenCode 지침 edits OpenCode's own AGENTS.md (an isolated config folder here, never the real ~/.config/opencode).
+    private static void VerifyOpenCodeInstructions(Window owner, string evidence)
+    {
+        object? previous = AppContext.GetData("TerminalNotes.OpenCodeConfigDirectory");
+        string folder = Path.Combine(evidence, "opencode-config");
+        AppContext.SetData("TerminalNotes.OpenCodeConfigDirectory", folder);
+        try
+        {
+            string agents = Path.Combine(folder, "AGENTS.md");
+            Require(OpenCodeAgentInstructions.FilePath == agents && OpenCodeAgentInstructions.ReadCurrent() == "",
+                "OpenCode 지침 is not OpenCode's AGENTS.md in its config folder.");
+            var editor = GlobalAgentInstructionsDialog.CreateOpenCodeInstructions();
+            editor.Owner = owner;
+            try
+            {
+                Require(editor.Title == "OpenCode 지침" && editor.PathText.Text == agents && editor.InstructionsInput.Text == "" &&
+                    AutomationProperties.GetName(editor.InstructionsInput) == "OpenCode 지침 내용" &&
+                    editor.DescriptionText.Text.Contains("Terminal Notes 밖", StringComparison.Ordinal),
+                    "OpenCode 지침 editor metadata is wrong.");
+                Save(editor);
+                Require(editor.SaveStatusLabel.Text == "저장 완료" && !File.Exists(agents),
+                    "Saving an unchanged empty OpenCode 지침 created AGENTS.md (it would hide OpenCode's CLAUDE.md fallback).");
+                editor.InstructionsInput.Text = "# 내 OpenCode 지침\n- 한국어로 답한다.";
+                Save(editor);
+                Require(editor.SaveStatusLabel.Text == "저장 완료" && File.ReadAllText(agents) == editor.InstructionsInput.Text,
+                    "OpenCode 지침 was not saved to AGENTS.md.");
+                const string outside = "# Edited outside\nKeep it.";
+                File.WriteAllText(agents, outside);
+                editor.InstructionsInput.Text = "# Local draft";
+                Save(editor);
+                Require(editor.SaveStatusLabel.Text == "저장 충돌" && File.ReadAllText(agents) == outside && editor.InstructionsInput.Text == "# Local draft",
+                    "OpenCode 지침 overwrote a file changed outside the editor.");
+                Require(!File.Exists(GlobalAgentInstructions.FilePath) || !File.ReadAllText(GlobalAgentInstructions.FilePath).Contains("Local draft") &&
+                    (!File.Exists(PlanMakerInstructions.FilePath) || !File.ReadAllText(PlanMakerInstructions.FilePath).Contains("Local draft")),
+                    "OpenCode 지침 wrote a Terminal Notes instruction file.");
+                RenderEditor(editor, evidence, "opencode-instructions-minimum");
+            }
+            finally { editor.Close(); }
+        }
+        finally { AppContext.SetData("TerminalNotes.OpenCodeConfigDirectory", previous); }
     }
 
     private static void Save(GlobalAgentInstructionsDialog dialog) => typeof(GlobalAgentInstructionsDialog)
