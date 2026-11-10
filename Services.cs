@@ -5017,6 +5017,9 @@ public static class GlobalAgentInstructions
         // 2026-11-07 default before the wording cleanup (CRLF and LF).
         "86D02C5EA7A8ABC2AAC21A1E2BA380275BD3A1C51CC5F4FB5BF00FABE68023D4",
         "BB5765DE9E79781B91E0E045540A5FD9C29CB79A2900B4A3D9F86D8E609BF015",
+        // 2026-11-11 default before the design section (simple and minimal, readable text, WPF title bar) (CRLF and LF).
+        "CB323F5A4AAB3E293D2307DC9191FBAC8D51CD16CC87212D6C83CC493AAFF5EE",
+        "DF796CA80A9861051FD0F8C35391887FF0D0DC6B24E33F1AF705D3930358A14D",
     ];
 
     public static string FilePath => Path.Combine(DirectoryPath, "global-agent-instructions.md");
@@ -5299,6 +5302,12 @@ public static class GlobalAgentInstructions
         - 화면이 있는 서비스는 기능만이 아니라 사용 흐름도 완성한다: 첫 화면에서 할 일을 알 수 있고, 진행 중·완료·오류 상태가 보이며, 문구가 자연스럽다.
         - 외부 라이브러리·API·명령은 프로젝트에 설치된 버전과 문서·코드를 확인하고 쓴다. 존재를 확인하지 않은 함수나 옵션을 추측으로 쓰지 않는다.
         - 비밀번호·토큰·API 키는 코드나 저장소에 넣지 않고 환경 변수나 저장소에서 제외된 설정 파일로 다룬다.
+
+        ## 디자인
+
+        - 항상 심플하고 미니멀하게, 단순하고 간단하게 만든다. 화면에는 꼭 필요한 요소만 두고 장식, 중복 설명, 쓰지 않는 단추, 과한 색과 효과를 넣지 않는다. 코드도 같은 결과를 내는 더 단순한 구조를 택한다. 사용자가 원한 기능을 빼라는 뜻은 아니다.
+        - 모든 요소의 글자가 배경과 충분히 대비되어 잘 보이게 디자인한다. 제목, 본문, 보조 설명, 단추, 입력칸, 목록과 표, 툴팁, 제목 표시줄까지 마우스 오버·선택·비활성 상태에서도 글자가 배경에 묻히지 않는지 실제 화면으로 확인한다. 어두운 테마라면 테마 색이 창 전체에 적용되어 기본 글자색(검정)이 남지 않게 한다.
+        - C# WPF 앱은 기본 Windows 제목 표시줄 대신 앱 테마에 맞는 모던하고 깔끔한 제목 표시줄을 직접 만들고 최소화·최대화(이전 크기로)·닫기 단추를 넣는다. 끌어서 옮기기, 두 번 눌러 최대화, 가장자리로 크기 조절이 되고 최대화했을 때 작업 표시줄을 가리지 않는지 확인한다.
 
         ## 진행 방법
 
