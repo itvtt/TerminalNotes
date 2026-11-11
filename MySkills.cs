@@ -9,6 +9,7 @@ using System.Text.RegularExpressions;
 [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("TerminalNotes.MySkillsTests")]
 [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("TerminalNotes.LiveVerifyTests")]
 [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("TerminalNotes.AppLiveTests")]
+[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("TerminalNotes.AppLiveClaudeTests")]
 
 namespace TerminalNotes;
 
@@ -82,6 +83,8 @@ internal static class MySkills
     private static string ArchivePath => Path.Combine(Root, "archive.zip");
     private static string SettingsPath => Path.Combine(Root, "settings.json");
     private static string Folder(string name) => Path.Combine(Root, name);
+    // OpenCode's skill folder and Claude Code's: a skill that is on is in both (the same SKILL.md works for both).
+    private static IEnumerable<string> SkillRoots => [InstalledSkills.GlobalDirectory, ClaudeCodeSessions.SkillsDirectory];
     private static string Deployed(string name) => Path.Combine(InstalledSkills.GlobalDirectory, name);
 
     internal static bool IsMine(string name) => name.StartsWith(Prefix, StringComparison.Ordinal) && InstalledSkills.ValidName(name);
@@ -369,13 +372,13 @@ internal static class MySkills
             }
             // OpenCode's folder follows the library: ours that are off or gone are taken out, ours that are on are there.
             skills = List();
-            if (Directory.Exists(InstalledSkills.GlobalDirectory))
-                foreach (string folder in Directory.EnumerateDirectories(InstalledSkills.GlobalDirectory))
+            foreach (string skillRoot in SkillRoots.Where(Directory.Exists))
+                foreach (string folder in Directory.EnumerateDirectories(skillRoot))
                 {
                     string name = Path.GetFileName(folder);
                     if (IsMine(name) && File.Exists(Path.Combine(folder, Marker)) && skills.All(skill => skill.Name != name || !skill.Applied)) Undeploy(name);
                 }
-            foreach (var skill in skills.Where(skill => skill.Applied && !File.Exists(Path.Combine(Deployed(skill.Name), Marker)))) Deploy(skill);
+            foreach (var skill in skills.Where(skill => skill.Applied && SkillRoots.Any(skillRoot => !File.Exists(Path.Combine(skillRoot, skill.Name, Marker))))) Deploy(skill);
             TrimArchive();
         }
         return new Curation(off, archived);
@@ -456,18 +459,25 @@ internal static class MySkills
 
     private static void Deploy(Skill skill)
     {
-        string folder = Deployed(skill.Name);
-        // A folder of the same name that is not ours is left alone.
-        if (Directory.Exists(folder) && !File.Exists(Path.Combine(folder, Marker)) && File.Exists(Path.Combine(folder, "SKILL.md"))) return;
-        Directory.CreateDirectory(folder);
-        File.WriteAllText(Path.Combine(folder, Marker), "나만의 스킬 · Terminal Notes가 관리합니다.\n", Utf8);
-        WriteAtomic(Path.Combine(folder, "SKILL.md"), SkillText(skill));
+        foreach (string skillRoot in SkillRoots)
+        {
+            string folder = Path.Combine(skillRoot, skill.Name);
+            // A folder of the same name that is not ours is left alone.
+            if (Directory.Exists(folder) && !File.Exists(Path.Combine(folder, Marker)) && File.Exists(Path.Combine(folder, "SKILL.md"))) continue;
+            Directory.CreateDirectory(folder);
+            File.WriteAllText(Path.Combine(folder, Marker), "나만의 스킬 · Terminal Notes가 관리합니다.\n", Utf8);
+            WriteAtomic(Path.Combine(folder, "SKILL.md"), SkillText(skill));
+        }
     }
 
     private static void Undeploy(string name)
     {
-        string folder = Deployed(name);
-        if (IsMine(name) && File.Exists(Path.Combine(folder, Marker))) Directory.Delete(folder, recursive: true);
+        if (!IsMine(name)) return;
+        foreach (string skillRoot in SkillRoots)
+        {
+            string folder = Path.Combine(skillRoot, name);
+            if (File.Exists(Path.Combine(folder, Marker))) Directory.Delete(folder, recursive: true);
+        }
     }
 
     private static string OneLine(string? text) => Regex.Replace(text ?? "", @"\s+", " ").Trim();

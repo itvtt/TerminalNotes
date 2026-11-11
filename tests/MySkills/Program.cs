@@ -49,6 +49,8 @@ internal static class Program
         string opencode = Path.Combine(fixture, "opencode-skills");
         AppContext.SetData("TerminalNotes.SkillsDirectory", opencode);
         AppContext.SetData("TerminalNotes.MySkillsDirectory", Path.Combine(fixture, "my-skills"));
+        AppContext.SetData("TerminalNotes.ClaudeSkillsDirectory", Path.Combine(fixture, "claude-skills"));
+        AppContext.SetData("TerminalNotes.ClaudeProjectsDirectory", Path.Combine(fixture, "claude-projects"));
         AppContext.SetData("TerminalNotes.SkillFavoritesPath", Path.Combine(fixture, "favorites.json"));
         AppContext.SetData("TerminalNotes.DataDirectory", Path.Combine(fixture, "data"));
         Directory.CreateDirectory(opencode);
@@ -73,6 +75,8 @@ internal static class Program
         string deployed = Path.Combine(opencode, skill.Name, "SKILL.md");
         Assert(File.Exists(deployed) && File.ReadAllText(deployed).StartsWith("---\nname: my-wpf-release-check\ndescription: \"WPF 앱을 릴리스할 때\"\n---\n\n# WPF 릴리스 확인\n\n1. 버전을 올린다.", StringComparison.Ordinal),
             "an applied skill is in OpenCode's folder with its frontmatter");
+        string claudeSkills = (string)AppContext.GetData("TerminalNotes.ClaudeSkillsDirectory")!;
+        Assert(File.ReadAllText(Path.Combine(claudeSkills, skill.Name, "SKILL.md")) == File.ReadAllText(deployed), "and in Claude Code's skill folder, the same SKILL.md");
         Assert(MySkills.NameFor("wpf-release-check", "x") == "my-wpf-release-check-2", "a taken name gets a number");
         Assert(MySkills.NameFor("", "한글 제목").StartsWith("my-skill-", StringComparison.Ordinal), "a title without letters gets a made-up name");
 
@@ -93,6 +97,7 @@ internal static class Program
         // Off and on: OpenCode's copy goes and comes back; a folder that is not ours is left alone.
         MySkills.SetApplied(skill.Name, false);
         Assert(!Directory.Exists(Path.Combine(opencode, skill.Name)) && !MySkills.Get(skill.Name)!.Applied, "off takes it out of OpenCode's folder");
+        Assert(!Directory.Exists(Path.Combine((string)AppContext.GetData("TerminalNotes.ClaudeSkillsDirectory")!, skill.Name)), "and out of Claude Code's");
         MySkills.SetApplied(skill.Name, true);
         Assert(File.Exists(deployed), "on puts it back");
         Directory.CreateDirectory(Path.Combine(opencode, "my-hand-made"));
@@ -201,6 +206,37 @@ internal static class Program
         Assert(MySkillLearning.ParseLesson($"{MySkillLearning.Start}\nname: a\ntitle: 제목\n---\n본문") is { Body: "본문" }, "an answer without its end marker is taken");
         Assert(MySkillLearning.ParseLesson("이 작업은 다시 쓸 만한 절차가 없습니다.\n" + MySkillLearning.None) is null, "nothing to keep stays nothing");
         Assert(MySkillLearning.ParseLesson("모델이 설명만 길게 했습니다. title이라는 단어도 있지만 형식은 아닙니다.") is null, "prose is not taken");
+
+        // Claude Code: a record in the shape Claude Code 2.1 writes, its folder name, its title.
+        string task = Path.Combine(Path.GetTempPath(), "TN claude task", "보고서 task");
+        Assert(ClaudeCodeSessions.FolderFor(task).EndsWith(System.Text.RegularExpressions.Regex.Replace(Path.GetFullPath(task), "[^A-Za-z0-9]", "-"), StringComparison.Ordinal) &&
+            Path.GetFileName(ClaudeCodeSessions.FolderFor(@"Z:\codex")) == "Z--codex", "Claude Code's record folder for a task (Z:\\codex → Z--codex)");
+        string[] record =
+        [
+            """{"type":"permission-mode","permissionMode":"auto","sessionId":"s1"}""",
+            """{"type":"user","uuid":"u1","sessionId":"s1","isSidechain":false,"message":{"role":"user","content":"sales.csv로 보고서를 만들어"}}""",
+            """{"type":"user","uuid":"u0","isMeta":true,"message":{"role":"user","content":"<command-name>/clear</command-name>"}}""",
+            """{"type":"assistant","uuid":"a1","sessionId":"s1","message":{"role":"assistant","content":[{"type":"thinking","thinking":"..."},{"type":"text","text":"확인하겠습니다."},{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"head -3 sales.csv","description":"보기"}}]}}""",
+            """{"type":"user","uuid":"u2","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":"No such file"}]}}""",
+            """{"type":"assistant","uuid":"a2","message":{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Skill","input":{"skill":"my-csv-report"}}]}}""",
+            """{"type":"assistant","uuid":"a3","isSidechain":true,"message":{"role":"assistant","content":[{"type":"tool_use","id":"t3","name":"Bash","input":{"command":"sub agent"}}]}}""",
+            """{"type":"ai-title","aiTitle":"CSV 보고서 만들기","sessionId":"s1"}""",
+            "not json"
+        ];
+        var claudeDigest = MySkillLearning.ReadClaude(record, null);
+        Assert(claudeDigest.ToolCalls == 2 && claudeDigest.UsedSkills is ["my-csv-report"] && claudeDigest.LastMessageId == "a2", "a Claude Code record counts its tool calls and skills, not a sub-agent's");
+        Assert(claudeDigest.Text.Contains("사용자: sales.csv로 보고서를 만들어", StringComparison.Ordinal) && claudeDigest.Text.Contains("[도구 Bash] command=head -3 sales.csv description=보기 (실패: No such file)", StringComparison.Ordinal) &&
+            claudeDigest.Text.Contains("에이전트: 확인하겠습니다.", StringComparison.Ordinal) && !claudeDigest.Text.Contains("/clear", StringComparison.Ordinal) && !claudeDigest.Text.Contains("sub agent", StringComparison.Ordinal),
+            "the Claude Code record reads: " + claudeDigest.Text);
+        Assert(MySkillLearning.ReadClaude(record, "a1") is { ToolCalls: 1, LastMessageId: "a2" }, "only what came after the last read line");
+        Assert(MySkillLearning.ReadClaude(record, "gone") is { ToolCalls: 0, LastMessageId: "gone" }, "a last-read line no longer there reads nothing again");
+        string folder = ClaudeCodeSessions.FolderFor(task);
+        Directory.CreateDirectory(folder);
+        File.WriteAllLines(Path.Combine(folder, "s1.jsonl"), record);
+        Directory.CreateDirectory(Path.Combine(folder, "s1", "subagents"));
+        File.WriteAllLines(Path.Combine(folder, "s1", "subagents", "agent-x.jsonl"), record);
+        var listed = ClaudeCodeSessions.List(task);
+        Assert(listed.Count == 1 && listed[0].Id == "s1" && listed[0].Title == "CSV 보고서 만들기", "a task's Claude Code conversations with their titles, sub-agents left out");
 
         // The usage limit as OpenCode reported it (2026-11-12), against a moment's rate limit.
         using var limited = JsonDocument.Parse("""{"type":"retry","attempt":1,"message":"Free usage exceeded, subscribe to Go","action":{"reason":"free_tier_limit","provider":"opencode","title":"Free limit reached"},"next":1794445060987}""");

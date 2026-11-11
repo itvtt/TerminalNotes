@@ -44,6 +44,7 @@ internal static class Program
         string task = Path.Combine(fixture, "build-task");
         Directory.CreateDirectory(task);
         AppContext.SetData("TerminalNotes.ScheduledJobsPath", Path.Combine(fixture, "jobs.json"));
+        AppContext.SetData("TerminalNotes.ClaudeProjectsDirectory", Path.Combine(fixture, "claude-projects"));
         try
         {
             Jobs(task);
@@ -199,7 +200,27 @@ internal static class Program
         var box = Descendants(search).OfType<TextBox>().First();
         box.Text = "빌드";
         await Task.Delay(900);
-        Assert(Descendants(search).OfType<TextBlock>().Any(text => text.IsVisible && text.Text.StartsWith("열린 OpenCode 터미널", StringComparison.Ordinal)), "without a running server it says what is needed");
+        Assert(Descendants(search).OfType<TextBlock>().Any(text => text.IsVisible && text.Text.StartsWith("찾을 대화가 없습니다", StringComparison.Ordinal) &&
+            text.Text.Contains("OpenCode 대화는 OpenCode 터미널이 열려 있을 때", StringComparison.Ordinal)), "with nothing to search it says so, and when OpenCode ones come in");
+        // A Claude Code conversation of the task: found without any OpenCode terminal, marked Claude Code, 이어가기 = claude --resume.
+        string records = ClaudeCodeSessions.FolderFor(task);
+        Directory.CreateDirectory(records);
+        File.WriteAllLines(Path.Combine(records, "c1.jsonl"),
+        [
+            """{"type":"user","uuid":"u1","message":{"role":"user","content":"빌드 오류를 고쳐"}}""",
+            """{"type":"assistant","uuid":"a1","message":{"role":"assistant","content":[{"type":"tool_use","id":"t","name":"Bash","input":{"command":"dotnet build"}}]}}""",
+            """{"type":"ai-title","aiTitle":"빌드 오류 고치기"}"""
+        ]);
+        string? resumed = null;
+        ConversationSearchWindow.ResumeOverride = (_, command) => resumed = command;
+        box.Text = "dotnet build";
+        await Task.Delay(1200);
+        var claudeHit = Descendants(search).OfType<Border>().FirstOrDefault(border => AutomationProperties.GetAutomationId(border) == "ConversationHit");
+        Assert(claudeHit is not null && Descendants(claudeHit).OfType<TextBlock>().Any(text => text.Text.Contains("Claude Code", StringComparison.Ordinal)) &&
+            Descendants(claudeHit).OfType<TextBlock>().Any(text => text.Text == "빌드 오류 고치기"), "a Claude Code conversation is found by its title and agent without OpenCode");
+        if (claudeHit is not null) Descendants(claudeHit).OfType<Button>().First(button => button.Content as string == "이어가기").RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+        Assert(resumed == "claude --resume c1", "이어가기 goes on with claude --resume: " + resumed);
+        await SaveImage(search, "conversation-search-claude.png");
         await SaveImage(search, "conversation-search.png");
         search.Close();
     }

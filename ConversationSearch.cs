@@ -26,7 +26,10 @@ internal sealed class ConversationSearchWindow : Window
     private readonly System.Windows.Threading.DispatcherTimer _pause = new() { Interval = TimeSpan.FromMilliseconds(500) };
     private CancellationTokenSource? _search;
 
-    internal sealed record Session(string Project, string Id, string Title, long Updated);
+    internal const string ClaudeAgent = "Claude Code";
+
+    /// <summary>A conversation: OpenCode's (through its server) or Claude Code's (<paramref name="File"/>, its record).</summary>
+    internal sealed record Session(string Project, string Id, string Title, long Updated, string Agent = "OpenCode", string? File = null);
 
     internal sealed record Hit(Session Session, string Snippet, string Text);
 
@@ -54,7 +57,7 @@ internal sealed class ConversationSearchWindow : Window
         _pause.Tick += (_, _) => { _pause.Stop(); _ = SearchAsync(); };
         Loaded += (_, _) => _query.Focus();
         Closed += (_, _) => _search?.Cancel();
-        _state.Text = $"태스크 {projects.Count}개의 대화를 최근 것부터 찾습니다.";
+        _state.Text = $"태스크 {projects.Count}개의 OpenCode·Claude Code 대화를 최근 것부터 찾습니다.";
     }
 
     private async Task SearchAsync()
@@ -63,7 +66,8 @@ internal sealed class ConversationSearchWindow : Window
         string query = _query.Text.Trim();
         _results.Children.Clear();
         if (query.Length < 2) { _state.Text = "두 글자 이상 쓰세요."; return; }
-        if (_endpoint() is not { } endpoint) { _state.Text = "열린 OpenCode 터미널이 있어야 지난 대화를 검색할 수 있습니다."; return; }
+        // Claude Code conversations are read from their records (always); OpenCode ones through a running OpenCode terminal.
+        var endpoint = _endpoint();
         var search = _search = new CancellationTokenSource();
         int hits = 0;
         try
@@ -72,9 +76,14 @@ internal sealed class ConversationSearchWindow : Window
             var sessions = new List<Session>();
             foreach (string project in _projects)
             {
+                sessions.AddRange(await Task.Run(() => ClaudeCodeSessions.List(project)
+                    .Select(claude => new Session(project, claude.Id, claude.Title, claude.Updated.ToUnixTimeMilliseconds(), ClaudeAgent, claude.Path)).ToList(), search.Token));
+                if (endpoint is null) continue;
                 using var client = new OpenCodeConversationClient(endpoint, project);
                 sessions.AddRange(Sessions(await client.ListSessionsAsync(search.Token), project));
             }
+            string missing = endpoint is null ? " · OpenCode 대화는 OpenCode 터미널이 열려 있을 때 함께 찾습니다" : "";
+            if (sessions.Count == 0) { _state.Text = "찾을 대화가 없습니다" + missing; return; }
             int read = 0;
             foreach (var session in sessions.OrderByDescending(session => session.Updated).Take(SessionLimit))
             {
@@ -82,8 +91,12 @@ internal sealed class ConversationSearchWindow : Window
                 if (Cache.TryGetValue(session.Id, out var cached) && cached.Updated == session.Updated) text = cached.Text;
                 else
                 {
-                    using var client = new OpenCodeConversationClient(endpoint, session.Project);
-                    text = MySkillLearning.Read(await client.ReadMessagesAsync(session.Id, search.Token), null).Text;
+                    if (session.File is { } file) text = await Task.Run(() => MySkillLearning.ReadClaude(ClaudeCodeSessions.ReadShared(file), null).Text, search.Token);
+                    else
+                    {
+                        using var client = new OpenCodeConversationClient(endpoint!, session.Project);
+                        text = MySkillLearning.Read(await client.ReadMessagesAsync(session.Id, search.Token), null).Text;
+                    }
                     Cache[session.Id] = (session.Updated, text);
                 }
                 read++;
@@ -94,10 +107,10 @@ internal sealed class ConversationSearchWindow : Window
                 }
                 if (search.IsCancellationRequested) return;
             }
-            _state.Text = hits == 0 ? $"대화 {read}개에서 찾지 못했습니다." : $"대화 {read}개 중 {hits}개" + (hits >= HitLimit ? " (더 있으면 검색어를 좁히세요)" : "");
+            _state.Text = (hits == 0 ? $"대화 {read}개에서 찾지 못했습니다" : $"대화 {read}개 중 {hits}개" + (hits >= HitLimit ? " (더 있으면 검색어를 좁히세요)" : "")) + missing;
         }
         catch (OperationCanceledException) { }
-        catch (Exception exception) when (exception is HttpRequestException or InvalidDataException or JsonException)
+        catch (Exception exception) when (exception is HttpRequestException or InvalidDataException or JsonException or IOException or UnauthorizedAccessException)
         {
             if (!search.IsCancellationRequested) _state.Text = "검색하지 못했습니다 · " + exception.Message;
         }
@@ -134,7 +147,8 @@ internal sealed class ConversationSearchWindow : Window
         var title = new TextBlock { Text = hit.Session.Title, FontSize = 14, FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis };
         title.SetResourceReference(TextBlock.ForegroundProperty, "TextPrimary");
         var meta = new TextBlock { FontSize = 12, Margin = new Thickness(0, 2, 0, 0),
-            Text = Path.GetFileName(hit.Session.Project.TrimEnd('\\', '/')) + " · " + DateTimeOffset.FromUnixTimeMilliseconds(hit.Session.Updated).ToLocalTime().ToString("yyyy-MM-dd HH:mm") };
+            Text = Path.GetFileName(hit.Session.Project.TrimEnd('\\', '/')) + " · " + hit.Session.Agent + " · " +
+                DateTimeOffset.FromUnixTimeMilliseconds(hit.Session.Updated).ToLocalTime().ToString("yyyy-MM-dd HH:mm") };
         meta.SetResourceReference(TextBlock.ForegroundProperty, "Accent");
         var text = new StackPanel();
         text.Children.Add(title);
@@ -175,16 +189,21 @@ internal sealed class ConversationSearchWindow : Window
         return frame;
     }
 
-    /// <summary>Replaces opening the PowerShell window (tests).</summary>
-    internal static Action<string, string>? ResumeOverride { get; set; }
+    /// <summary>Replaces opening the PowerShell window (tests): the session and the command it would run.</summary>
+    internal static Action<Session, string>? ResumeOverride { get; set; }
+
+    /// <summary>What continues a conversation in its task folder.</summary>
+    internal static string ResumeCommand(Session session) =>
+        session.Agent == ClaudeAgent ? "claude --resume " + session.Id : "opencode --session " + session.Id;
 
     private static void Resume(Session session)
     {
         if (!Regex.IsMatch(session.Id, "^[A-Za-z0-9_-]+$") || !Directory.Exists(session.Project)) return;
-        if (ResumeOverride is { } resume) { resume(session.Project, session.Id); return; }
+        string command = ResumeCommand(session);
+        if (ResumeOverride is { } resume) { resume(session, command); return; }
         System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("powershell.exe")
         {
-            UseShellExecute = true, WorkingDirectory = session.Project, ArgumentList = { "-NoExit", "-Command", "opencode --session " + session.Id }
+            UseShellExecute = true, WorkingDirectory = session.Project, ArgumentList = { "-NoExit", "-Command", command }
         });
     }
 }

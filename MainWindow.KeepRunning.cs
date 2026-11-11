@@ -16,17 +16,24 @@ public partial class MainWindow
     /// <summary>The terminals whose servers closing the app would keep: task terminals whose agent works or waits for an answer.</summary>
     private List<TerminalPane> PanesToKeep() => !KeepsAgents || !KeptServers.Enabled ? [] :
         TerminalTabs.Items.Cast<TabItem>().Select(tab => ((TerminalTabState)tab.Tag).Pane)
-            .Where(pane => AgentStateOf(pane.Activity, pane.HasCompletedWork) is AgentState.Working or AgentState.Blocked && pane.CanKeepRunningAfterClose).ToList();
+            .Where(pane => StateOf(pane) is AgentState.Working or AgentState.Blocked && pane.CanKeepRunningAfterClose).ToList();
 
     /// <summary>What closing the app asks: which agents go on (the others' terminals end).</summary>
     internal string ExitConfirmation()
     {
         var kept = PanesToKeep();
-        if (kept.Count == 0) return "앱을 닫으면 열려 있는 모든 터미널과 실행 중인 프로그램이 종료됩니다. 닫을까요?";
-        string names = string.Join(", ", kept.Select(pane => ProjectDisplayName(pane.WorkingDirectory)).Distinct(StringComparer.OrdinalIgnoreCase).Take(3));
-        bool others = TerminalTabs.Items.Count > kept.Count;
-        return $"작업 중인 에이전트 {kept.Count}개({names})는 앱을 닫아도 계속 실행되고, 다시 열면 그대로 이어집니다." +
-            (others ? "\n나머지 터미널은 종료됩니다." : "") + " 닫을까요?";
+        // Claude Code and Codex run inside the app's terminal: their work stops (the conversation stays, to go on from 지난 대화 검색).
+        var stopping = TerminalTabs.Items.Cast<TabItem>().Select(tab => ((TerminalTabState)tab.Tag).Pane)
+            .Where(pane => pane.IsTypedAgent && StateOf(pane) is AgentState.Working or AgentState.Blocked).ToList();
+        string Names(IEnumerable<TerminalPane> panes) =>
+            string.Join(", ", panes.Select(pane => ProjectDisplayName(pane.WorkingDirectory)).Distinct(StringComparer.OrdinalIgnoreCase).Take(3));
+        if (kept.Count == 0 && stopping.Count == 0) return "앱을 닫으면 열려 있는 모든 터미널과 실행 중인 프로그램이 종료됩니다. 닫을까요?";
+        var lines = new List<string>();
+        if (kept.Count > 0) lines.Add($"작업 중인 에이전트 {kept.Count}개({Names(kept)})는 앱을 닫아도 계속 실행되고, 다시 열면 그대로 이어집니다.");
+        if (stopping.Count > 0)
+            lines.Add($"작업 중인 Claude Code·Codex {stopping.Count}개({Names(stopping)})는 앱을 닫으면 멈춥니다. 대화는 남아 지난 대화 검색에서 이어갈 수 있습니다.");
+        if (TerminalTabs.Items.Count > kept.Count + stopping.Count) lines.Add("나머지 터미널은 종료됩니다.");
+        return string.Join("\n", lines) + " 닫을까요?";
     }
 
     /// <summary>At close, before the terminals are disposed: the working ones keep their servers. Returns how many.</summary>

@@ -24,7 +24,7 @@ public partial class MainWindow
     private void InitializeHerdrExtras(StackPanel actions)
     {
         actions.Children.Insert(0, IconButton("", "예약 작업 · 정한 요일·시각에 태스크 터미널로 지시를 보냅니다", "ScheduledJobsButton", OpenScheduledJobs));
-        actions.Children.Insert(0, IconButton("", "지난 대화 검색", "ConversationSearchButton", OpenConversationSearch));
+        actions.Children.Insert(0, IconButton("", "지난 대화 검색 · 태스크의 OpenCode·Claude Code 대화", "ConversationSearchButton", OpenConversationSearch));
         _jobTimer = new DispatcherTimer(TimeSpan.FromSeconds(30), DispatcherPriority.Background, (_, _) => RunDueJobs(), Dispatcher);
         _jobTimer.Start();
         Closed += (_, _) => _jobTimer.Stop();
@@ -85,7 +85,7 @@ public partial class MainWindow
             TerminalPane pane;
             try { pane = OpenTaskTerminal(job.Project); }
             catch (Exception exception) when (exception is InvalidOperationException or IOException) { continue; }
-            if (!pane.IsReady || AgentStateOf(pane.Activity, pane.HasCompletedWork) is AgentState.Working or AgentState.Blocked) continue;
+            if (!pane.IsReady || StateOf(pane) is AgentState.Working or AgentState.Blocked) continue;
             _ = SendJobAsync(pane, job);
         }
     }
@@ -95,7 +95,11 @@ public partial class MainWindow
         _jobsSending.Add(job.Id);
         try
         {
-            bool sent = await pane.SubmitStartupInputAsync($"[예약 작업 · {ScheduledJobs.When(job)}]\n{job.Instruction}", false, () => !_closing, _ => { }, CancellationToken.None);
+            string text = $"[예약 작업 · {ScheduledJobs.When(job)}]\n{job.Instruction}";
+            // OpenCode takes it through its server; Claude Code and Codex as typed input.
+            bool sent = pane.IsTypedAgent
+                ? await pane.SubmitTypedAgentInputAsync(text.Replace('\n', ' '), CancellationToken.None)
+                : await pane.SubmitStartupInputAsync(text, false, () => !_closing, _ => { }, CancellationToken.None);
             _jobWaitingSince.Remove(job.Id);
             ScheduledJobs.MarkRun(job.Id, DateTimeOffset.Now, sent ? "보냄" : "보내지 못함 · " + (pane.LastPlanExecutionFailure ?? "터미널이 받지 않았습니다"));
             if (!sent && _taskNotificationPreferences.CanNotify(DateTimeOffset.UtcNow))

@@ -57,6 +57,7 @@ internal static class Program
         AppContext.SetData("TerminalNotes.DataDirectory", Path.Combine(root, "data"));
         AppContext.SetData("TerminalNotes.SkillsDirectory", Path.Combine(config, "opencode", "skills"));
         AppContext.SetData("TerminalNotes.MySkillsDirectory", Path.Combine(root, "my-skills"));
+        AppContext.SetData("TerminalNotes.ClaudeSkillsDirectory", Path.Combine(root, "claude-skills"));
         AppContext.SetData("TerminalNotes.KeptServersPath", Path.Combine(root, "kept-servers.json"));
         AppContext.SetData("TerminalNotes.ScheduledJobsPath", Path.Combine(root, "jobs.json"));
         var hooks = new OpenCodeStartupHooks(_ => Task.FromResult(true), () => false, _ => throw new InvalidOperationException("no installs in tests"));
@@ -158,7 +159,7 @@ internal static class Program
             second.WindowState = WindowState.Normal;
             await Task.Delay(500);
             (string Project, string Session)? resumed = null;
-            ConversationSearchWindow.ResumeOverride = (folder, session) => resumed = (folder, session);
+            ConversationSearchWindow.ResumeOverride = (session, _) => resumed = (session.Project, session.Id);
             Call(second, "OpenConversationSearch");
             var search = Application.Current.Windows.OfType<ConversationSearchWindow>().Single();
             await Task.Delay(500);

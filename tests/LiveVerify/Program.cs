@@ -24,6 +24,7 @@ internal static class Program
 
     private static async Task<int> Main(string[] args)
     {
+        if (args.Contains("claude")) return await ClaudeAsync();
         string root = Path.Combine(Path.GetTempPath(), "TerminalNotes live " + Guid.NewGuid().ToString("N")[..8]);
         string config = Path.Combine(root, "config"), project = Path.Combine(root, "sales-report");
         Directory.CreateDirectory(project);
@@ -32,6 +33,7 @@ internal static class Program
         AppContext.SetData("TerminalNotes.SkillsDirectory", Path.Combine(config, "opencode", "skills"));
         AppContext.SetData("TerminalNotes.MySkillsDirectory", Path.Combine(root, "my-skills"));
         await File.WriteAllTextAsync(Path.Combine(project, "sales.csv"), "region,month,amount\nseoul,1,120\nbusan,1,80\nseoul,2,150\nbusan,2,95\ndaegu,2,40\n");
+        AppContext.SetData("TerminalNotes.ClaudeSkillsDirectory", Path.Combine(root, "claude-skills"));
         int port = FreePort();
         var endpoint = new Uri($"http://127.0.0.1:{port}/");
         using var host = new OpenCodeHeadlessHost(endpoint);
@@ -181,6 +183,100 @@ internal static class Program
             if (proposals.Count > 0) proposed++;
         }
         Assert(proposed == rounds, $"the curator proposes the merge every time ({proposed}/{rounds})");
+    }
+
+    // ── Claude Code: the same loop with its records and its cheapest model, every call's cost logged.
+    private static async Task<int> ClaudeAsync()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "TerminalNotes live claude " + Guid.NewGuid().ToString("N")[..8]);
+        string project = Path.Combine(root, "salesreport");
+        Directory.CreateDirectory(project);
+        AppContext.SetData("TerminalNotes.SkillsDirectory", Path.Combine(root, "opencode-skills"));
+        AppContext.SetData("TerminalNotes.ClaudeSkillsDirectory", Path.Combine(root, "claude-skills"));
+        AppContext.SetData("TerminalNotes.MySkillsDirectory", Path.Combine(root, "my-skills"));
+        await File.WriteAllTextAsync(Path.Combine(project, "sales.csv"), "region,month,amount\nseoul,1,120\nbusan,1,80\nseoul,2,150\nbusan,2,95\n");
+        string records = ClaudeCodeSessions.FolderFor(project);
+        try
+        {
+            // 1. Real work in Claude Code (haiku, its Bash tool only): a task it works out itself, a record written.
+            var work = await RunClaude(project, ["--tools", "Bash", "--dangerously-skip-permissions", "--setting-sources", ""],
+                "이 폴더의 sales.csv로 월별·지역별 매출 합계 보고서를 report.md에 마크다운 표 두 개로 만들어라. 먼저 파일과 헤더를 확인하고, " +
+                "월별과 지역별 합계를 따로 계산하고, 두 표의 총합이 원본 총합과 같은지 검산하라. 단계마다 Bash 도구를 따로 써라. 끝나면 한 줄로 결과만 말해라.");
+            Log("work: " + work);
+            var sessions = ClaudeCodeSessions.List(project);
+            Log($"records: {records} · {sessions.Count} · " + string.Join(" | ", sessions.Select(session => session.Title)));
+            Assert(sessions.Count == 1, "Claude Code wrote the conversation record where it is looked for");
+            var digest = MySkillLearning.ReadClaude(ClaudeCodeSessions.ReadShared(sessions[0].Path), null);
+            Log($"digest: {digest.ToolCalls} tool calls, {digest.Text.Length} chars\n{Indent(digest.Text)}");
+            Assert(digest.ToolCalls >= MySkillLearning.MinimumToolCalls, $"the record reads as {digest.ToolCalls} tool calls");
+
+            // 2. Learning from it with Claude Code's cheapest model.
+            var learned = await MainWindow.LearnFromClaudeAsync(project, "salesreport", CancellationToken.None);
+            Log($"learn cost: {ClaudeCodeModel.LastUsage} · " + (learned is null ? "nothing learned · answer: " + ClaudeCodeModel.LastAnswer : $"{learned.Name} · {learned.Title}\n{Indent(learned.Body)}"));
+            Assert(learned is not null, "a five-step task is learned as a skill");
+            if (learned is not null)
+            {
+                Assert(File.Exists(Path.Combine(root, "claude-skills", learned.Name, "SKILL.md")) && File.Exists(Path.Combine(root, "opencode-skills", learned.Name, "SKILL.md")),
+                    "the skill is in Claude Code's skill folder and OpenCode's");
+                Assert(await MainWindow.LearnFromClaudeAsync(project, "salesreport", CancellationToken.None) is null, "right after, nothing new to learn (and no model call)");
+
+                // 3. Claude Code uses it in a later session (the task's own skill folder), and the use is counted.
+                string own = Path.Combine(project, ".claude", "skills", learned.Name);
+                Directory.CreateDirectory(own);
+                File.Copy(Path.Combine(root, "claude-skills", learned.Name, "SKILL.md"), Path.Combine(own, "SKILL.md"));
+                var use = await RunClaude(project, ["--tools", "Skill", "--dangerously-skip-permissions", "--setting-sources", "project"],
+                    $"Skill 도구로 {learned.Name} 스킬을 불러온 뒤, 그 스킬의 첫 단계만 한 줄로 말해라.");
+                Log("use: " + use);
+                await MainWindow.LearnFromClaudeAsync(project, "salesreport", CancellationToken.None);
+                Assert(MySkills.Get(learned.Name) is { Uses: > 0 }, $"the use of the skill is counted ({MySkills.Get(learned.Name)?.Uses})");
+            }
+
+            // 4. The curator with Claude Code: two skills on the same subject.
+            MySkills.Save(null, "CSV 월별 합계 내기", "CSV에서 월별 합계를 낼 때", "1. 헤더를 확인한다.\n2. awk로 월별로 더한다.", learned: true);
+            MySkills.Save(null, "월별 매출 집계", "매출 CSV를 월별로 집계할 때", "- awk -F, 로 month별 합계\n- 결과를 표로 쓴다", learned: true);
+            var review = await MainWindow.ReviewMySkillsAsync(ClaudeCodeModel.Ask, CancellationToken.None);
+            var proposals = MySkills.ReadSettings().Proposals;
+            Log($"review cost (last call): {ClaudeCodeModel.LastUsage} · groups {review.Groups}, proposals {proposals.Count}, dropped [{string.Join("; ", review.Dropped)}]" +
+                string.Join("", proposals.Select(proposal => $"\n      {string.Join(" + ", proposal.Names)} → {proposal.Title}")));
+            Assert(proposals.Count > 0, "the curator proposes merging skills on the same subject");
+
+            // 5. Search: the record is found by what was run, and goes on with claude --resume.
+            var session = ClaudeCodeSessions.List(project).OrderBy(found => found.Updated).First();
+            var hit = ConversationSearchWindow.Match(new ConversationSearchWindow.Session(project, session.Id, session.Title, 0, ConversationSearchWindow.ClaudeAgent, session.Path),
+                MySkillLearning.ReadClaude(ClaudeCodeSessions.ReadShared(session.Path), null).Text, "report.md");
+            Assert(hit is { Snippet.Length: > 0 }, "the work is found by a word from it: " + hit?.Snippet);
+            Assert(hit is { } found && ConversationSearchWindow.ResumeCommand(found.Session) == "claude --resume " + session.Id, "and goes on with claude --resume");
+        }
+        catch (Exception exception) { _failures++; Console.WriteLine("FAIL " + exception); }
+        finally
+        {
+            try { Directory.Delete(root, true); } catch { }
+            try { if (Directory.Exists(records)) Directory.Delete(records, true); } catch { }
+        }
+        Console.WriteLine(_failures == 0 ? "PASS live verification (Claude Code)" : $"FAIL live verification (Claude Code) ({_failures})");
+        return _failures;
+    }
+
+    // One Claude Code print-mode run in the task folder with haiku, saved as a conversation; its answer and cost.
+    private static async Task<string> RunClaude(string folder, string[] extra, string prompt)
+    {
+        var info = new ProcessStartInfo(ClaudeCodeModel.Executable()!)
+        {
+            WorkingDirectory = folder, UseShellExecute = false, RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
+            StandardInputEncoding = new System.Text.UTF8Encoding(false), StandardOutputEncoding = System.Text.Encoding.UTF8
+        };
+        foreach (string argument in new[] { "-p", "--model", "haiku", "--strict-mcp-config", "--system-prompt", "시키는 대로 짧게 일한다.", "--output-format", "json" }.Concat(extra))
+            info.ArgumentList.Add(argument);
+        using var process = Process.Start(info)!;
+        await process.StandardInput.WriteAsync(prompt);
+        process.StandardInput.Close();
+        string output = await process.StandardOutput.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        using var json = JsonDocument.Parse(output);
+        var r = json.RootElement;
+        var usage = r.GetProperty("usage");
+        long input = usage.GetProperty("input_tokens").GetInt64() + usage.GetProperty("cache_creation_input_tokens").GetInt64() + usage.GetProperty("cache_read_input_tokens").GetInt64();
+        return $"{r.GetProperty("result").GetString()?.Trim()} (turns {r.GetProperty("num_turns")}, in {input}, out {usage.GetProperty("output_tokens")}, ${r.GetProperty("total_cost_usd").GetDouble():0.####})";
     }
 
     // Sends one prompt in a new session and waits until the agent is done.

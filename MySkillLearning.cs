@@ -95,6 +95,82 @@ internal static class MySkillLearning
         return new Digest(text2, tools, used, last);
     }
 
+    /// <summary>The same from a Claude Code conversation record (one JSON object a line): user and assistant turns of the main
+    /// conversation (sub-agent turns and Claude Code's own tags left out), tool calls with failures, skills used; after the line
+    /// <paramref name="after"/> (its uuid) when it is there.</summary>
+    internal static Digest ReadClaude(IEnumerable<string> records, string? after)
+    {
+        var lines = new List<string>();
+        var used = new List<string>();
+        int tools = 0;
+        string? firstAsk = null, last = null;
+        bool reading = after is null;
+        var pending = new List<(string Line, int Tools, int Used)>();
+        foreach (string record in records)
+        {
+            if (!record.Contains("\"type\":\"user\"", StringComparison.Ordinal) && !record.Contains("\"type\":\"assistant\"", StringComparison.Ordinal)) continue;
+            JsonDocument document;
+            try { document = JsonDocument.Parse(record); }
+            catch (JsonException) { continue; }
+            using (document)
+            {
+                var root = document.RootElement;
+                string role = Text(root, "type") ?? "";
+                if (role is not ("user" or "assistant") || IsTrue(root, "isSidechain") || IsTrue(root, "isMeta")) continue;
+                string? id = Text(root, "uuid");
+                if (!reading)
+                {
+                    if (id == after) reading = true;
+                    continue;
+                }
+                if (id is not null) last = id;
+                if (!root.TryGetProperty("message", out var message) || !message.TryGetProperty("content", out var content)) continue;
+                if (content.ValueKind == JsonValueKind.String)
+                {
+                    string text = content.GetString() ?? "";
+                    if (text.TrimStart().StartsWith('<') || text.Length == 0) continue;
+                    if (role == "user") { firstAsk ??= Cut(text, 1500); lines.Add("사용자: " + Cut(text, 1200)); }
+                    else lines.Add("에이전트: " + Cut(text, 1500));
+                    continue;
+                }
+                if (content.ValueKind != JsonValueKind.Array) continue;
+                foreach (var part in content.EnumerateArray())
+                {
+                    switch (Text(part, "type"))
+                    {
+                        case "text" when Text(part, "text") is { Length: > 0 } text && !text.TrimStart().StartsWith('<'):
+                            if (role == "user") { firstAsk ??= Cut(text, 1500); lines.Add("사용자: " + Cut(text, 1200)); }
+                            else lines.Add("에이전트: " + Cut(text, 1500));
+                            break;
+                        case "tool_use":
+                            tools++;
+                            string tool = Text(part, "name") ?? "?";
+                            part.TryGetProperty("input", out var input);
+                            if (tool == "Skill" && input.ValueKind == JsonValueKind.Object && (Text(input, "skill") ?? Text(input, "name") ?? Text(input, "command")) is { } skill)
+                                used.Add(skill);
+                            lines.Add($"[도구 {tool}] {Cut(input.ValueKind == JsonValueKind.Undefined ? "" : Compact(input), 260)}");
+                            break;
+                        case "tool_result" when IsTrue(part, "is_error"):
+                            string problem = part.TryGetProperty("content", out var result)
+                                ? result.ValueKind == JsonValueKind.String ? result.GetString() ?? "" : string.Join(" ", result.ValueKind == JsonValueKind.Array
+                                    ? result.EnumerateArray().Select(item => Text(item, "text") ?? "") : [])
+                                : "";
+                            if (lines.Count > 0 && lines[^1].StartsWith("[도구", StringComparison.Ordinal)) lines[^1] += " (실패: " + Cut(problem, 240) + ")";
+                            break;
+                    }
+                }
+            }
+        }
+        string all = string.Join("\n", lines);
+        if (all.Length > DigestLimit)
+        {
+            string head = firstAsk is null ? "" : "처음 요청: " + firstAsk + "\n…\n";
+            all = head + all[^(DigestLimit - head.Length)..];
+        }
+        // A last-read line no longer in the record (rewritten): read nothing new rather than everything again.
+        return reading ? new Digest(all, tools, used, last ?? after) : new Digest("", 0, [], after);
+    }
+
     internal static string LearnPrompt(Digest digest, IEnumerable<MySkills.Skill> existing, string projectName)
     {
         var known = existing.Select(skill => $"- {skill.Name}: {skill.Title} — {skill.Description}").ToList();
@@ -102,8 +178,9 @@ internal static class MySkillLearning
             너는 Terminal Notes의 스킬 학습 담당이다. 아래는 방금 끝난 OpenCode 작업의 기록이다. 다음에 비슷한 일을 할 때 도움이 될,
             다시 쓸 수 있는 절차가 있으면 스킬 하나로 정리하라. 도구는 쓰지 말고 아래 형식으로만 답한다.
 
-            정리하는 경우: 여러 단계를 거쳐 해결했고, 시행착오 끝에 알게 된 방법·명령·설정·확인 방법·주의점이 있으며, 같은 종류의 일이 다시 올 만한 경우.
-            정리하지 않는 경우: 단순한 질문과 답, 한 번뿐인 일, 이 작업에만 해당하는 내용뿐인 경우, 이미 있는 스킬과 같은 내용인 경우.
+            정리하는 경우: 확인·처리·검증처럼 여러 단계를 거친 일이고, 같은 종류의 일(다른 파일이나 다른 값이어도)이 다시 올 만한 경우.
+            시행착오가 없었어도 정리한다. 실패나 알아낸 점이 있었다면 주의점으로 남긴다.
+            정리하지 않는 경우: 한두 단계로 끝난 일, 질문에 답만 한 대화, 다시 올 일이 아닌 것이 분명한 경우, 이미 있는 스킬과 같은 내용인 경우.
             이미 있는 나만의 스킬과 주제가 같으면 새로 만들지 말고 update에 그 스킬 이름을 쓴다.
 
             규칙:

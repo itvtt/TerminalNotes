@@ -125,6 +125,22 @@ public partial class MainWindow
         ObserveAgents();
     }
 
+    /// <summary>A terminal's agent state: a Claude Code or Codex question on the screen is blocked whatever its output looks like.</summary>
+    internal static AgentState StateOf(TerminalPane pane)
+    {
+        if (!pane.IsTypedAgent) return AgentStateOf(pane.Activity, pane.HasCompletedWork);
+        // Claude Code and Codex: from their screen (a question, "esc to interrupt"), not from how much they print.
+        if (pane.IsAskingUser) return AgentState.Blocked;
+        if (pane.Activity is TerminalActivity.Exited) return AgentState.Ended;
+        if (pane.Activity is TerminalActivity.Starting || !pane.IsReady) return AgentState.Working;
+        if (pane.IsTypedAgentWorking) return AgentState.Working;
+        if (pane.Activity is TerminalActivity.RateLimited or TerminalActivity.Error) return AgentState.Blocked;
+        return pane.TypedAgentWorked ? AgentState.Done : AgentState.Waiting;
+    }
+
+    /// <summary>What a terminal waits for, told on the board and in its notification.</summary>
+    internal static string WaitingFor(TerminalPane pane) => pane.IsAskingUser ? "답이나 승인을 기다립니다 · 터미널에서 답하세요" : pane.ActivityLabel;
+
     internal static AgentState AgentStateOf(TerminalActivity activity, bool completedWork) => activity switch
     {
         TerminalActivity.NeedsInput or TerminalActivity.RateLimited or TerminalActivity.Error => AgentState.Blocked,
@@ -162,13 +178,13 @@ public partial class MainWindow
         foreach (var tab in tabs)
         {
             var state = (TerminalTabState)tab.Tag;
-            AgentState current = AgentStateOf(state.Pane.Activity, state.Pane.HasCompletedWork);
+            AgentState current = StateOf(state.Pane);
             counts[current] = counts.GetValueOrDefault(current) + 1;
             if (!_agentWatch.TryGetValue(state.Pane, out var watch)) _agentWatch[state.Pane] = watch = new AgentWatch { KeptCheck = state.Pane.WasKeptRunning };
             bool taskOwned = _taskNotificationBindings.Values.Any(binding => ReferenceEquals(binding.Pane, state.Pane));
             switch (Observe(watch, current, now, taskOwned))
             {
-                case AgentNotice.Blocked: NotifyAgent(tab, "확인 필요", state.Pane.ActivityLabel); break;
+                case AgentNotice.Blocked: NotifyAgent(tab, "확인 필요", WaitingFor(state.Pane)); break;
                 case AgentNotice.Done:
                     NotifyAgent(tab, "작업 완료", "작업을 마쳤습니다.");
                     LearnFrom(state.Pane);
@@ -222,7 +238,7 @@ public partial class MainWindow
         if (AgentNotificationOverride is { } sink) { sink(title, body, title == "확인 필요"); return; }
         AgentState expected = title == "확인 필요" ? AgentState.Blocked : AgentState.Done;
         _tray?.ShowTaskNotification(title, body, title == "확인 필요",
-            () => !_closing && TerminalTabs.Items.Contains(tab) && AgentStateOf(state.Pane.Activity, state.Pane.HasCompletedWork) == expected);
+            () => !_closing && TerminalTabs.Items.Contains(tab) && StateOf(state.Pane) == expected);
     }
 
     // The board: every terminal, blocked first, then working, done, waiting and ended; a click goes to it.
@@ -232,7 +248,7 @@ public partial class MainWindow
         _agentBoardRows.Children.Clear();
         var rows = TerminalTabs.Items.Cast<TabItem>()
             .Select(tab => (Tab: tab, State: (TerminalTabState)tab.Tag))
-            .Select(row => (row.Tab, row.State, Agent: AgentStateOf(row.State.Pane.Activity, row.State.Pane.HasCompletedWork)))
+            .Select(row => (row.Tab, row.State, Agent: StateOf(row.State.Pane)))
             .OrderBy(row => row.Agent).ThenBy(row => row.State.Sequence).ToList();
         foreach (var (tab, state, agent) in rows)
         {
@@ -253,7 +269,7 @@ public partial class MainWindow
             line.Children.Add(label);
             line.Children.Add(text);
             var row = new Button { Content = line, HorizontalContentAlignment = HorizontalAlignment.Stretch, Padding = new Thickness(8, 6, 8, 6),
-                Margin = new Thickness(0, 0, 0, 2), ToolTip = state.Pane.ActivityLabel };
+                Margin = new Thickness(0, 0, 0, 2), ToolTip = WaitingFor(state.Pane) };
             row.SetResourceReference(StyleProperty, "QuietIconButton");
             AutomationProperties.SetName(row, $"{state.Sequence:00} {state.Title} · {AgentStateLabel(agent)}");
             row.Click += (_, _) =>

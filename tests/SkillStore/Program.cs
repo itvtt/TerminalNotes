@@ -61,6 +61,7 @@ internal static class Program
         // The OpenCode config a task gets (its instruction files) stays in the fixture too.
         AppContext.SetData("TerminalNotes.DataDirectory", Path.Combine(fixture, "data"));
         AppContext.SetData("TerminalNotes.MySkillsDirectory", Path.Combine(fixture, "my-skills"));
+        AppContext.SetData("TerminalNotes.ClaudeSkillsDirectory", Path.Combine(fixture, "claude-skills"));
         // This PC's account is not a store admin here, whatever .env made the admins (the admin part below picks one).
         SkillStoreAdmins.AccountOverride = () => "DOMAIN\\not-a-store-admin";
         await CheckOpenCodeConfigAsync(fixture);
