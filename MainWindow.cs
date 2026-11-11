@@ -1163,6 +1163,9 @@ public partial class MainWindow
         Interval = TimeSpan.FromMilliseconds(750)
     };
     private Border? _automationProgressPanel;
+    // The role notice above the terminals (지휘·구현·검토 and the stage state) is not shown (2026-11-11 사용자: "지휘 검토 구현 이런
+    // 코멘트가 … 뜨는데 코멘트 다 재거해"). The panel keeps its state for the automation code and tests, which can show it.
+    private bool _automationProgressShown;
     private TextBlock? _automationProgressRole;
     private TextBlock? _automationProgressState;
     private AutomationActivityIndicator? _automationProgressIndicator;
@@ -1230,7 +1233,7 @@ public partial class MainWindow
             _automationProgressIndicator!.SetStatus(false, false, false, Brushes.Gray, "실행 없음");
             return;
         }
-        _automationProgressPanel.Visibility = Visibility.Visible;
+        _automationProgressPanel.Visibility = _automationProgressShown ? Visibility.Visible : Visibility.Collapsed;
         _automationProgressRole!.Text = RoleLabel(snapshot.Role);
         _automationProgressState!.Text = snapshot.State;
         Brush accent = ProgressBrush(snapshot.Tone);

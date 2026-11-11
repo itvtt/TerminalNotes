@@ -62,6 +62,11 @@ internal static class Program
             runs[runId] = run;
             Update(window);
             await DispatcherIdle(window);
+            Assert(panel.Visibility == Visibility.Collapsed, "the role notice above the terminals stays hidden during a run");
+            // The hidden panel still keeps its state: show it here to check that state and its indicator.
+            window.GetType().GetField("_automationProgressShown", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, true);
+            Update(window);
+            await DispatcherIdle(window);
             Assert(panel.Visibility == Visibility.Visible, "current execution shows a compact activity visual");
             Assert(!Descendants(panel).OfType<Expander>().Any() &&
                 !Descendants(panel).OfType<TextBlock>().Any(text => text.Text.Contains("SENSITIVE")),

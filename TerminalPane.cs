@@ -319,10 +319,7 @@ public sealed partial class TerminalPane : Grid, IDisposable
                 if (_failed || (_ready && !IsRunning)) return "터미널 종료";
                 if (_manualInputOverride) return "확인 필요 (수동)";
                 if (_autoResume?.IsStalled == true && _openCodeSnapshot?.Kind is not (OpenCodeStatusKind.NeedsInput or OpenCodeStatusKind.Busy)) return _autoResume.Status;
-                bool recentActivity = _openCodeStatus?.HasRecentActivity == true;
-                if (!recentActivity && _nativeAutomationSupervisionNotice is not null &&
-                    _openCodeSnapshot?.Kind is not (OpenCodeStatusKind.NeedsInput or OpenCodeStatusKind.Pending or OpenCodeStatusKind.Busy))
-                    return _nativeAutomationSupervisionNotice;
+                // Supervision notices ("지휘 지시로 중단 확인 중" and the like) are no longer shown on the terminal: its plain state is.
                 string nativeLabel = _openCodeSnapshot?.Kind switch
                 {
                     OpenCodeStatusKind.Busy => "진행 중",

@@ -428,6 +428,25 @@ internal static class StoreLook
            </ControlTemplate.Triggers>
           </ControlTemplate></Setter.Value></Setter>
          </Style>
+         <!-- The skill store's left list (전체, 사용 중, categories): the chosen one on a raised row with a gold bar and bright text. -->
+         <Style x:Key="StoreSideItem" TargetType="RadioButton">
+          <Setter Property="Foreground" Value="{StaticResource TextSecondary}"/><Setter Property="FontSize" Value="13.5"/>
+          <Setter Property="Height" Value="34"/><Setter Property="Padding" Value="12,0,10,0"/><Setter Property="Margin" Value="0,0,0,2"/>
+          <Setter Property="HorizontalContentAlignment" Value="Stretch"/><Setter Property="Cursor" Value="Hand"/>
+          <Setter Property="FocusVisualStyle" Value="{StaticResource StoreFocus}"/>
+          <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="RadioButton">
+           <Border x:Name="Row" Background="Transparent" CornerRadius="7">
+            <Grid>
+             <Border x:Name="Bar" Width="3" Height="16" HorizontalAlignment="Left" CornerRadius="1.5" Background="{StaticResource Accent}" Visibility="Hidden"/>
+             <ContentPresenter Margin="{TemplateBinding Padding}" VerticalAlignment="Center" HorizontalAlignment="Stretch"/>
+            </Grid>
+           </Border>
+           <ControlTemplate.Triggers>
+            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Row" Property="Background" Value="#FF1F1F1F"/></Trigger>
+            <Trigger Property="IsChecked" Value="True"><Setter TargetName="Row" Property="Background" Value="#FF262626"/><Setter TargetName="Bar" Property="Visibility" Value="Visible"/><Setter Property="Foreground" Value="{StaticResource TextPrimary}"/></Trigger>
+           </ControlTemplate.Triggers>
+          </ControlTemplate></Setter.Value></Setter>
+         </Style>
          <!-- A card's star: an outline, gold and filled when the skill is kept at the top. -->
          <Style x:Key="StoreStar" TargetType="ToggleButton">
           <Setter Property="Width" Value="28"/><Setter Property="Height" Value="28"/><Setter Property="Cursor" Value="Hand"/>

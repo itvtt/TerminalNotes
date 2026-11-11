@@ -465,7 +465,7 @@ internal static class Program
                 "A private skill was listed to another account, or lost its category: " + report);
             await dialog.RefreshAsync();
             // Skills shared without a category are 기타, the last tab.
-            Require(dialog.Categories.SequenceEqual(["전체", "보고서", "기타"]) &&
+            Require(dialog.Categories.SequenceEqual(["전체", "사용 중", "보고서", "기타"]) &&
                 Descendants(Card(dialog, report.Name)!).OfType<TextBlock>().Any(mark => mark.Text == StoreLook.LockGlyph),
                 "The category tabs, or the lock of a private skill: " + string.Join(", ", dialog.Categories));
             // 출처: a user id is only shown, a link opens, and only http(s) ever does: anyone writes it and a click starts it.
@@ -526,16 +526,21 @@ internal static class Program
                 .Single(toggle => System.Windows.Automation.AutomationProperties.GetName(toggle).StartsWith("즐겨찾기", StringComparison.Ordinal));
             star.IsChecked = true;
             star.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
-            // The applied skills have their own part at the top; below them a starred skill comes first.
+            // Parts by category; in a part the applied skills come first, then a starred one.
             var applied = InstalledSkills.List().Values.Where(entry => entry.Applied).Select(entry => entry.Name).ToHashSet();
+            dialog.Category = "기타";
             var order = Cards(dialog);
-            Require(applied.Count > 0 && order.Take(applied.Count).All(applied.Contains) && order[applied.Count] == trino.Name &&
+            int appliedHere = order.Count(applied.Contains);
+            Require(applied.Count > 0 && order.Take(appliedHere).All(applied.Contains) && order[appliedHere] == trino.Name &&
                 File.ReadAllText(favorites).Contains(trino.Name, StringComparison.Ordinal),
-                "Applied skills were not on top, or a starred skill did not come first after them: " + string.Join(", ", order));
-            var headings = Descendants(dialog).OfType<TextBlock>().Where(text => text.Visibility == Visibility.Visible && text.Text.StartsWith("적용", StringComparison.Ordinal))
-                .Select(text => text.Text).ToList();
-            Require(headings.SequenceEqual([$"적용됨 · {applied.Count}", $"적용 안 됨 · {order.Count - applied.Count}"]),
-                "The two parts were not named: " + string.Join(" | ", headings));
+                "Applied skills were not first in their part, or a starred skill did not come next: " + string.Join(", ", order));
+            dialog.Category = SkillStoreDialog.AppliedCategory;
+            Require(Cards(dialog).ToHashSet().SetEquals(applied), "사용 중 did not show exactly the applied skills: " + string.Join(", ", Cards(dialog)));
+            dialog.Category = "";
+            var headings = Descendants(dialog).OfType<TextBlock>()
+                .Where(text => System.Windows.Automation.AutomationProperties.GetAutomationId(text) == "SkillPartHeading").Select(text => text.Text).ToList();
+            Require(headings.Take(2).SequenceEqual(["보고서 · 1", $"기타 · {order.Count}"]),
+                "The parts were not one per category with its count: " + string.Join(" | ", headings));
             await SaveImage(dialog, "store-cards.png");
 
             // Its author deletes it from the ⋯ menu.

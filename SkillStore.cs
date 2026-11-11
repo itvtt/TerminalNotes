@@ -657,13 +657,16 @@ internal sealed class SkillStoreDialog : Window
     // The tasks whose own skills are brought up to date with the store when the window opens.
     private readonly IReadOnlyList<string> _tasks;
     private readonly IDisposable? _scope;
-    // Cards, three a row in the usual window (more when wider, fewer when narrow), all as tall as the tallest: the applied ones
-    // in their own part at the top, the rest below.
-    private readonly UniformGrid _active = new() { Columns = 3, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(18, 0, 18, 6) };
-    private readonly UniformGrid _list = new() { Columns = 3, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(18, 4, 18, 10) };
-    private readonly TextBlock _activeHeading = new(), _listHeading = new();
-    private readonly TextBox _search = new() { Tag = "검색", MaxLength = 80, Width = 240, Padding = new Thickness(11, 6, 11, 6), FontSize = 13 };
-    private readonly StackPanel _categories = new() { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+    // Cards in parts by category (2026-11-11 사용자: "스킬이 너무 많아지니 구분도 안되고 카테고리도 검색창하고 같은행이라 보기가
+    // 불편해"): the search box alone on top, 전체 · 사용 중 · each category with its count on the left, and the cards under a heading
+    // per category, three a row in the usual window (more when wider, fewer when narrow), all as tall as the tallest. In a part the
+    // applied ones come first, then the starred, then the latest change.
+    private readonly StackPanel _sections = new() { Margin = new Thickness(6, 0, 18, 10) };
+    private int _columns = 3;
+    private readonly TextBox _search = new() { Tag = "검색", MaxLength = 80, Padding = new Thickness(11, 6, 11, 6), FontSize = 13 };
+    private readonly StackPanel _categories = new() { Orientation = Orientation.Vertical };
+    private readonly Dictionary<string, TextBlock> _categoryCounts = new(StringComparer.OrdinalIgnoreCase);
+    internal const string AllCategory = "전체", AppliedCategory = "사용 중";
     // One line kept for what just happened, so the list does not jump when it comes and goes.
     private readonly TextBlock _status = new() { FontSize = 12.5, TextWrapping = TextWrapping.Wrap, MinHeight = 18, Margin = new Thickness(24, 0, 24, 14) };
     private readonly StackPanel _empty = new() { HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
@@ -712,33 +715,30 @@ internal sealed class SkillStoreDialog : Window
         _emptyText.SetResourceReference(TextBlock.ForegroundProperty, "TextSecondary");
         _empty.Children.Add(_emptyText);
         _empty.Children.Add(_retry);
-        // Above the cards: the search box and the category tabs.
-        var tools = new DockPanel { Margin = new Thickness(24, 14, 24, 6) };
-        DockPanel.SetDock(_search, Dock.Left);
-        _categories.Margin = new Thickness(18, 0, 0, 0);
-        tools.Children.Add(_search);
-        tools.Children.Add(new ScrollViewer { Content = _categories, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Disabled });
+        // The search box alone on top; the categories on the left; the cards in parts by category.
+        var tools = new Border { Margin = new Thickness(24, 14, 24, 10), Child = _search };
+        var side = new ScrollViewer { Content = _categories, Width = 184, Margin = new Thickness(24, 2, 6, 14),
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
         var center = new Grid();
-        foreach (var heading in new[] { _activeHeading, _listHeading })
-        {
-            heading.FontSize = 13;
-            heading.Margin = new Thickness(24, 8, 24, 4);
-            heading.SetResourceReference(TextBlock.ForegroundProperty, "TextSecondary");
-        }
-        var parts = new StackPanel();
-        foreach (UIElement part in new UIElement[] { _activeHeading, _active, _listHeading, _list }) parts.Children.Add(part);
-        var scroll = new ScrollViewer { Content = parts, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
+        var scroll = new ScrollViewer { Content = _sections, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
         // About 330 wide a card: three in the usual window.
-        scroll.SizeChanged += (_, e) => _list.Columns = _active.Columns = Math.Max(1, (int)((e.NewSize.Width - 36) / 330));
+        scroll.SizeChanged += (_, e) =>
+        {
+            _columns = Math.Max(1, (int)((e.NewSize.Width - 24) / 330));
+            foreach (var grid in _sections.Children.OfType<UniformGrid>()) grid.Columns = _columns;
+        };
         center.Children.Add(scroll);
         center.Children.Add(_empty);
+        var main = new DockPanel();
+        DockPanel.SetDock(side, Dock.Left);
+        main.Children.Add(side);
+        main.Children.Add(center);
         var body = new DockPanel();
         DockPanel.SetDock(tools, Dock.Top);
         DockPanel.SetDock(_status, Dock.Bottom);
         body.Children.Add(tools);
         body.Children.Add(_status);
-        body.Children.Add(center);
+        body.Children.Add(main);
         StoreLook.Dress(this, caption, body, project is null ? null : projectName ?? Path.GetFileName(project), _refresh, _share);
         _share.Click += async (_, _) => await ShareAsync(null);
         _refresh.Click += async (_, _) => await RefreshAsync();
@@ -757,8 +757,21 @@ internal sealed class SkillStoreDialog : Window
     internal bool ShowsEmpty => _empty.Visibility == Visibility.Visible;
     internal string EmptyText => _emptyText.Text;
     internal string SearchText { get => _search.Text; set => _search.Text = value; }
-    internal IReadOnlyList<string> Categories => _categories.Children.OfType<RadioButton>().Select(tab => (string)tab.Content).ToList();
-    internal string Category { get => _category; set { _category = value; Render(); } }
+    internal IReadOnlyList<string> Categories => _categories.Children.OfType<RadioButton>().Select(tab => (string)tab.Tag).ToList();
+    /// <summary>"" (전체), <see cref="AppliedCategory"/> or a category's name</summary>
+    internal string Category
+    {
+        get => _category;
+        set
+        {
+            _category = value == AllCategory ? "" : value;
+            foreach (var tab in _categories.Children.OfType<RadioButton>())
+                tab.IsChecked = string.Equals(FilterOf((string)tab.Tag), _category, StringComparison.OrdinalIgnoreCase);
+            Render();
+        }
+    }
+
+    private static string FilterOf(string shown) => shown == AllCategory ? "" : shown;
 
     internal async Task RefreshAsync()
     {
@@ -810,30 +823,45 @@ internal sealed class SkillStoreDialog : Window
         if (updated > 0) ShowStatus($"깃허브에서 바뀐 스킬 {updated}개를 업데이트했습니다. " + InstalledSkills.AppliedNow);
     }
 
-    // 전체, then each category the store's skills carry in 가나다 order, and 기타 (shared without one) last.
+    // The store's categories in 가나다 order with 기타 (shared without one) last.
+    private List<string> CategoryNames() => _skills.Select(skill => skill.CategoryName).Distinct(StringComparer.OrdinalIgnoreCase)
+        .OrderBy(name => name == StoreSkill.OtherCategory).ThenBy(name => name, StringComparer.CurrentCulture).ToList();
+
+    // On the left: 전체, 사용 중, a line, then each category; every row with its count (filled in by Render).
     private void RenderCategories()
     {
-        var names = _skills.Select(skill => skill.CategoryName).Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(name => name == StoreSkill.OtherCategory).ThenBy(name => name, StringComparer.CurrentCulture).ToList();
-        if (_category.Length > 0 && !names.Contains(_category, StringComparer.OrdinalIgnoreCase)) _category = "";
+        var names = CategoryNames();
+        if (_category.Length > 0 && _category != AppliedCategory && !names.Contains(_category, StringComparer.OrdinalIgnoreCase)) _category = "";
         _categories.Children.Clear();
-        foreach (string name in names.Prepend("전체"))
+        _categoryCounts.Clear();
+        void Row(string shown)
         {
-            string value = name == "전체" ? "" : name;
-            var tab = new RadioButton { Content = name, GroupName = "SkillCategory", Margin = new Thickness(0, 0, 18, 0), Height = 32,
-                IsChecked = string.Equals(value, _category, StringComparison.OrdinalIgnoreCase) };
-            tab.SetResourceReference(StyleProperty, "StoreTab");
-            tab.Checked += (_, _) => { _category = value; Render(); };
+            var name = new TextBlock { Text = shown, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
+            var count = new TextBlock { FontSize = 12.5, Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
+            count.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+            var content = new DockPanel();
+            DockPanel.SetDock(count, Dock.Right);
+            content.Children.Add(count);
+            content.Children.Add(name);
+            var tab = new RadioButton { Content = content, Tag = shown, GroupName = "SkillCategory",
+                IsChecked = string.Equals(FilterOf(shown), _category, StringComparison.OrdinalIgnoreCase) };
+            tab.SetResourceReference(StyleProperty, "StoreSideItem");
+            AutomationProperties.SetName(tab, shown);
+            tab.Checked += (_, _) => { _category = FilterOf(shown); Render(); };
             _categories.Children.Add(tab);
+            _categoryCounts[shown] = count;
         }
-        // Only 기타 means nothing was sorted yet: no tabs.
-        _categories.Visibility = names.Any(name => name != StoreSkill.OtherCategory) ? Visibility.Visible : Visibility.Collapsed;
+        Row(AllCategory);
+        Row(AppliedCategory);
+        var line = new Border { Height = 1, Margin = new Thickness(10, 8, 10, 8) };
+        line.SetResourceReference(Border.BackgroundProperty, "Line");
+        _categories.Children.Add(line);
+        foreach (string name in names) Row(name);
     }
 
     private void Render()
     {
-        _active.Children.Clear();
-        _list.Children.Clear();
+        _sections.Children.Clear();
         Dictionary<string, InstalledSkills.Entry> installed;
         HashSet<string> global = [], off = [];
         try
@@ -850,36 +878,46 @@ internal sealed class SkillStoreDialog : Window
             installed = [];
             ShowStatus("적용한 스킬 폴더를 읽지 못했습니다 · " + exception.Message);
         }
-        string query = _search.Text.Trim();
-        bool Matches(StoreSkill skill) =>
-            (_category.Length == 0 || string.Equals(skill.CategoryName, _category, StringComparison.OrdinalIgnoreCase)) &&
-            (query.Length == 0 || new[] { skill.Title, skill.Description, skill.Summary, skill.Author, skill.CategoryName, skill.Name, skill.Origin }
-                .Any(text => text?.Contains(query, StringComparison.CurrentCultureIgnoreCase) == true));
-        // Starred first, then the latest change first.
-        foreach (var skill in _skills.Where(Matches).OrderByDescending(skill => _favorites.Contains(skill.Name)).ThenByDescending(skill => skill.ShownDate))
+        // Every store skill with how it stands here.
+        var rows = _skills.Select(skill =>
         {
             installed.TryGetValue(skill.Name, out var local);
             // A global skill (not this task's own copy) is on here unless this task turned it off.
             bool fromGlobal = global.Contains(skill.Name) && local is not { Applied: true };
-            // Without a description of its own a skill's is its title, which the card already shows: then its first line of
-            // instructions (relay 2.3 and later).
-            string description = (skill.Description ?? "").Trim();
-            if (string.Equals(description, (skill.Title ?? "").Trim(), StringComparison.OrdinalIgnoreCase)) description = (skill.Summary ?? "").Trim();
             bool globalOff = fromGlobal && off.Contains(skill.Name);
-            Add(Card(skill.Title ?? skill.Name, description, skill.Name, local, skill, fromGlobal, globalOff), local is { Applied: true } || fromGlobal && !globalOff);
-        }
+            return (Skill: skill, Local: local, FromGlobal: fromGlobal, GlobalOff: globalOff, Applied: local is { Applied: true } || fromGlobal && !globalOff);
+        }).ToList();
         // Applied (or kept) skills that are no longer in the store, or while it is unreachable, stay manageable.
-        if (query.Length == 0 && _category.Length == 0)
-            foreach (var local in installed.Values.Where(entry => entry.FromStore && _skills.All(skill => skill.Name != entry.Name)).OrderBy(entry => entry.Name))
-                Add(Card(local.Title ?? local.Name, "스토어 목록에 없음", local.Name, local, null, false, false), local.Applied);
-        // The two parts are named only when both have cards; with nothing applied the list is as before.
-        bool split = _active.Children.Count > 0;
-        _activeHeading.Text = $"적용됨 · {_active.Children.Count}";
-        _listHeading.Text = $"적용 안 됨 · {_list.Children.Count}";
-        _active.Visibility = _activeHeading.Visibility = split ? Visibility.Visible : Visibility.Collapsed;
-        _listHeading.Visibility = split && _list.Children.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
-        _listHeading.Margin = new Thickness(24, 18, 24, 4);
-        bool any = _active.Children.Count + _list.Children.Count > 0;
+        var missing = installed.Values.Where(entry => entry.FromStore && _skills.All(skill => skill.Name != entry.Name)).OrderBy(entry => entry.Name).ToList();
+        foreach (var (shown, count) in _categoryCounts)
+            count.Text = (shown == AllCategory ? _skills.Count
+                : shown == AppliedCategory ? rows.Count(row => row.Applied) + missing.Count(entry => entry.Applied)
+                : _skills.Count(skill => string.Equals(skill.CategoryName, shown, StringComparison.OrdinalIgnoreCase))).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        string query = _search.Text.Trim();
+        bool Matches(StoreSkill skill) =>
+            query.Length == 0 || new[] { skill.Title, skill.Description, skill.Summary, skill.Author, skill.CategoryName, skill.Name, skill.Origin }
+                .Any(text => text?.Contains(query, StringComparison.CurrentCultureIgnoreCase) == true);
+        var shownRows = rows.Where(row => Matches(row.Skill) && (_category.Length == 0 ||
+            (_category == AppliedCategory ? row.Applied : string.Equals(row.Skill.CategoryName, _category, StringComparison.OrdinalIgnoreCase)))).ToList();
+        // In a part: applied first, then starred, then the latest change.
+        IEnumerable<Border> Cards(IEnumerable<(StoreSkill Skill, InstalledSkills.Entry? Local, bool FromGlobal, bool GlobalOff, bool Applied)> part) =>
+            part.OrderByDescending(row => row.Applied).ThenByDescending(row => _favorites.Contains(row.Skill.Name)).ThenByDescending(row => row.Skill.ShownDate)
+                .Select(row =>
+                {
+                    // Without a description of its own a skill's is its title, which the card already shows: then its first line of
+                    // instructions (relay 2.3 and later).
+                    string description = (row.Skill.Description ?? "").Trim();
+                    if (string.Equals(description, (row.Skill.Title ?? "").Trim(), StringComparison.OrdinalIgnoreCase)) description = (row.Skill.Summary ?? "").Trim();
+                    return Card(row.Skill.Title ?? row.Skill.Name, description, row.Skill.Name, row.Local, row.Skill, row.FromGlobal, row.GlobalOff);
+                });
+        if (_category.Length == 0)
+            foreach (string name in CategoryNames())
+                AddPart(name, Cards(shownRows.Where(row => string.Equals(row.Skill.CategoryName, name, StringComparison.OrdinalIgnoreCase))).ToList());
+        else AddPart(_category, Cards(shownRows).ToList());
+        if (query.Length == 0 && (_category.Length == 0 || _category == AppliedCategory))
+            AddPart("스토어 목록에 없음", missing.Where(entry => _category.Length == 0 || entry.Applied)
+                .Select(local => Card(local.Title ?? local.Name, "스토어 목록에 없음", local.Name, local, null, false, false)).ToList());
+        bool any = _sections.Children.OfType<UniformGrid>().Any(grid => grid.Children.Count > 0);
         _empty.Visibility = any ? Visibility.Collapsed : Visibility.Visible;
         string? problem = _store is null ? NoStore : _failure;
         if (!any)
@@ -890,7 +928,19 @@ internal sealed class SkillStoreDialog : Window
         else if (problem is not null && _status.Text.Length == 0) ShowStatus(problem);
     }
 
-    private void Add(Border card, bool applied) => (applied ? _active : _list).Children.Add(card);
+    // A part: its heading (name · count) and its cards.
+    private void AddPart(string name, IReadOnlyList<Border> cards)
+    {
+        if (cards.Count == 0) return;
+        var heading = new TextBlock { Text = $"{name} · {cards.Count}", FontSize = 13.5, FontWeight = FontWeights.SemiBold,
+            Margin = new Thickness(18, _sections.Children.Count == 0 ? 2 : 16, 18, 6) };
+        heading.SetResourceReference(TextBlock.ForegroundProperty, "TextSecondary");
+        AutomationProperties.SetAutomationId(heading, "SkillPartHeading");
+        var grid = new UniformGrid { Columns = _columns, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(12, 0, 0, 4) };
+        foreach (var card in cards) grid.Children.Add(card);
+        _sections.Children.Add(heading);
+        _sections.Children.Add(grid);
+    }
 
     // A card: the title (a lock when only its author sees it, a link when it follows GitHub), the latest version's badge and the
     // star; a short description and the 출처 when it has one; at the bottom left the date (made, or last changed) and the author in
@@ -1240,7 +1290,7 @@ internal sealed class SkillStoreDialog : Window
     {
         _busy = busy;
         _share.IsEnabled = _retry.IsEnabled = _refresh.IsEnabled = !busy;
-        foreach (var row in _active.Children.OfType<Border>().Concat(_list.Children.OfType<Border>())) row.IsEnabled = !busy;
+        foreach (var row in _sections.Children.OfType<UniformGrid>().SelectMany(grid => grid.Children.OfType<Border>())) row.IsEnabled = !busy;
         ShowStatus(status);
     }
 
