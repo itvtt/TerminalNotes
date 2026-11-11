@@ -14872,6 +14872,7 @@ public partial class MainWindow : Window
         InitializeAnnouncements();
         StartSystemMeter();
         StartAutomaticProblemReports();
+        InitializeAgentBoard();
         ContentRendered += (_, _) => _ = CheckForUpdatesAtStartupAsync();
         ContentRendered += (_, _) => _ = TakeOutWithdrawnSkillsAtStartAsync();
         _settings = ReadSettings();
