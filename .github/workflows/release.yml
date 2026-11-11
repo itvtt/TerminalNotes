@@ -18,6 +18,11 @@ on:
     branches: [main]
     paths-ignore: ['docs/**', '**.md', 'tests/**', 'relay/**']
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, for example 1.2.0 (empty: the next patch)'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -51,6 +56,7 @@ jobs:
         shell: powershell
         env:
           GH_TOKEN: ${{ github.token }}
+          REQUESTED_VERSION: ${{ github.event.inputs.version }}
         run: |
           [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
           [xml]$project = Get-Content TerminalNotes.csproj -Encoding UTF8
@@ -63,6 +69,12 @@ jobs:
           } catch { Write-Host "No previous release." }
           # Never go backwards: the csproj version is the floor, otherwise one past the latest release.
           if ($latest -and $latest -ge $base) { $next = [version]::new($latest.Major, $latest.Minor, $latest.Build + 1) } else { $next = [version]::new($base.Major, $base.Minor, [Math]::Max(0, $base.Build)) }
+          if ($env:REQUESTED_VERSION -and $env:REQUESTED_VERSION.Trim()) {
+            $wanted = $env:REQUESTED_VERSION.Trim().TrimStart('v', 'V')
+            if ($wanted -notmatch '^\d+\.\d+\.\d+$') { throw "Version must look like 1.2.3: $wanted" }
+            if ($latest -and [version]$wanted -le $latest) { throw "Version $wanted must be above the latest release." }
+            $next = [version]$wanted
+          }
           Write-Host "Version $next"
           Add-Content -Path $env:GITHUB_OUTPUT -Value "version=$next" -Encoding ASCII
 
