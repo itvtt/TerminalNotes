@@ -43,6 +43,14 @@ internal sealed partial class SkillStoreDialog
         learn.SetResourceReference(StyleProperty, "StoreSwitch");
         AutomationProperties.SetName(learn, "자동으로 배우기");
         learn.Click += (_, _) => MySkills.UpdateSettings(current => current with { AutoLearn = learn.IsChecked == true });
+        if (MySkillLearning.Resting(settings, DateTimeOffset.UtcNow) is { } resting && settings.AutoLearn)
+        {
+            var rest = new TextBlock { Text = resting, FontSize = 12, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0),
+                ToolTip = "배우기와 정리는 작업과 같은 모델(같은 사용 한도)을 씁니다. 한도에 걸리면 돌아올 때까지, 하루 요청 수를 넘기면 내일까지 쉽니다." };
+            rest.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+            AutomationProperties.SetAutomationId(rest, "MySkillResting");
+            actions.Children.Add(rest);
+        }
         actions.Children.Add(learnLabel);
         actions.Children.Add(learn);
         if (usage.Archived > 0 || _showArchive)

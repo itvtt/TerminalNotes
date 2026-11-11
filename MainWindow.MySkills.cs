@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Net.Http;
 using System.Text.Json;
 using TerminalNotes.Services;
@@ -28,7 +28,9 @@ public partial class MainWindow
     private void LearnFrom(TerminalPane pane)
     {
         if (LearnOverride is { } learn) { learn(pane); return; }
-        if (_learning is { IsCompleted: false } || pane.LearningSource is not { } source || !MySkills.ReadSettings().AutoLearn) return;
+        var settings = MySkills.ReadSettings();
+        if (_learning is { IsCompleted: false } || pane.LearningSource is not { } source || !settings.AutoLearn ||
+            MySkillLearning.Resting(settings, DateTimeOffset.UtcNow) is not null) return;
         var now = DateTimeOffset.UtcNow;
         if (_learnedAt.TryGetValue(source.SessionId, out var last) && now - last < LearnGap) return;
         _learnedAt[source.SessionId] = now;
@@ -62,7 +64,23 @@ public partial class MainWindow
         if (digest.UsedSkills.Count > 0) MySkills.RecordUses(digest.UsedSkills);
         if (digest.LastMessageId is { } lastMessage)
             MySkills.UpdateSettings(current => current with { LearnedUpTo = new(current.LearnedUpTo) { [sessionId] = lastMessage } });
-        if (digest.ToolCalls < MySkillLearning.MinimumToolCalls) return null;
+        if (digest.ToolCalls < MySkillLearning.MinimumToolCalls || MySkillLearning.Resting(MySkills.ReadSettings(), DateTimeOffset.UtcNow) is not null) return null;
+        try { return await AskForSkillAsync(client, sessionId, digest, project, projectName, token); }
+        catch (ModelUsageLimitException limit)
+        {
+            RestAtLimit(limit);
+            return null;
+        }
+    }
+
+    /// <summary>The model's usage limit was reached: learning rests until it comes back (or <see cref="MySkillLearning.LimitRest"/>).</summary>
+    internal static void RestAtLimit(ModelUsageLimitException limit) =>
+        MySkills.UpdateSettings(current => current with { PausedUntil = limit.RetryAt is { } at && at > DateTimeOffset.UtcNow ? at : DateTimeOffset.UtcNow + MySkillLearning.LimitRest });
+
+    private static async Task<MySkills.Skill?> AskForSkillAsync(OpenCodeConversationClient client, string sessionId, MySkillLearning.Digest digest,
+        string project, string projectName, CancellationToken token)
+    {
+        MySkills.UpdateSettings(current => MySkillLearning.Count(current, DateTimeOffset.UtcNow));
         string? model = await client.ReadPlanMakerModelAsync(sessionId, await client.ReadAgentsAsync(token), token);
         string answer = await client.CompleteToolLessPromptAsync("Terminal Notes · 스킬 배우기",
             MySkillLearning.LearnPrompt(digest, MySkills.List(), projectName), model, token, TimeSpan.FromMinutes(6), TimeSpan.FromMinutes(2));
@@ -103,7 +121,9 @@ public partial class MainWindow
         }
         catch (Exception exception) when (exception is IOException or InvalidDataException or HttpRequestException)
         {
-            // Not reviewed (a slow or busy model, measured 2026-11-12): tried again after the next learned skill.
+            // Not reviewed (a slow or busy model, measured 2026-11-12): tried again after the next learned skill. At the usage
+            // limit learning rests too.
+            if (exception is ModelUsageLimitException limit) RestAtLimit(limit);
             return new Review("", 0, ["검토하지 못함 · " + exception.Message]);
         }
         var proposals = new List<MySkills.MergeProposal>();
@@ -143,6 +163,7 @@ public partial class MainWindow
             catch (Exception exception) when (exception is IOException or InvalidDataException or HttpRequestException)
             {
                 // A slow or failed answer loses this merge only, not the rest of the review.
+                if (exception is ModelUsageLimitException usage) RestAtLimit(usage);
                 problems?.Add(exception.Message);
                 return null;
             }

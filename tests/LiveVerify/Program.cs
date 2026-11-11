@@ -41,6 +41,42 @@ internal static class Program
             Log($"server {host.ProcessId} on {port}");
             using var client = new OpenCodeConversationClient(endpoint, project);
             string? model = args.FirstOrDefault(arg => arg.Contains('/'));
+            if (args.Contains("limit"))
+            {
+                // What OpenCode reports while the provider refuses (a used-up free limit): its session status and message error.
+                var created = await client.CreateSessionAsync("limit probe");
+                string probe = created.GetProperty("id").GetString()!;
+                await client.SendAsync(probe, "한 단어로 답해: 안녕", "msg_" + Guid.NewGuid().ToString("N"), "opencode/big-pickle");
+                for (int i = 0; i < 12; i++)
+                {
+                    await Task.Delay(2500);
+                    var status = await client.ReadStatusAsync();
+                    string mine = status.ValueKind == JsonValueKind.Object && status.TryGetProperty(probe, out var own) ? own.GetRawText() : "(none)";
+                    Log("status: " + (mine.Length > 400 ? mine[..400] : mine));
+                }
+                foreach (var message in (await client.ReadMessagesAsync(probe)).EnumerateArray())
+                    if (message.GetProperty("info").TryGetProperty("error", out var error)) Log("message error: " + error.GetRawText()[..Math.Min(500, error.GetRawText().Length)]);
+                var watch = Stopwatch.StartNew();
+                try
+                {
+                    await client.CompleteToolLessPromptAsync("Terminal Notes · 스킬 배우기", "한 단어로 답해: 안녕", "opencode/big-pickle", CancellationToken.None,
+                        TimeSpan.FromSeconds(90), TimeSpan.FromSeconds(60));
+                    Log("side session answered (no limit now)");
+                }
+                catch (ModelUsageLimitException limit)
+                {
+                    Log($"side session: limit in {watch.Elapsed.TotalSeconds:0} s · {limit.Message}");
+                    Assert(watch.Elapsed < TimeSpan.FromSeconds(30) && limit.RetryAt is not null, "at the usage limit a side session stops at once, with when it comes back");
+                }
+                // The curator at the limit: learning rests until then.
+                MySkills.Save(null, "가", "가", "가", learned: true);
+                MySkills.Save(null, "나", "나", "나", learned: true);
+                var limitReview = await MainWindow.ReviewMySkillsAsync(client, "opencode/big-pickle", CancellationToken.None);
+                var rest = MySkillLearning.Resting(MySkills.ReadSettings(), DateTimeOffset.UtcNow);
+                Log($"review: {string.Join("; ", limitReview.Dropped)} · resting: {rest}");
+                Assert(rest?.Contains("사용 한도", StringComparison.Ordinal) == true, "and learning rests until the limit comes back");
+                return _failures;
+            }
             if (args.Contains("merges"))
             {
                 await MergesAsync(client);

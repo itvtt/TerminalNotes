@@ -201,6 +201,24 @@ internal static class Program
         Assert(MySkillLearning.ParseLesson($"{MySkillLearning.Start}\nname: a\ntitle: 제목\n---\n본문") is { Body: "본문" }, "an answer without its end marker is taken");
         Assert(MySkillLearning.ParseLesson("이 작업은 다시 쓸 만한 절차가 없습니다.\n" + MySkillLearning.None) is null, "nothing to keep stays nothing");
         Assert(MySkillLearning.ParseLesson("모델이 설명만 길게 했습니다. title이라는 단어도 있지만 형식은 아닙니다.") is null, "prose is not taken");
+
+        // The usage limit as OpenCode reported it (2026-11-12), against a moment's rate limit.
+        using var limited = JsonDocument.Parse("""{"type":"retry","attempt":1,"message":"Free usage exceeded, subscribe to Go","action":{"reason":"free_tier_limit","provider":"opencode","title":"Free limit reached"},"next":1794445060987}""");
+        var limit = TerminalNotes.Services.ModelUsageLimitException.FromRetryStatus(limited.RootElement);
+        Assert(limit is { RetryAt: { } back } && back == DateTimeOffset.FromUnixTimeMilliseconds(1794445060987), "a used-up free limit is told with when it comes back: " + limit?.Message);
+        using var busy = JsonDocument.Parse("""{"type":"retry","attempt":2,"message":"Too many requests, retrying","next":1794445060987}""");
+        Assert(TerminalNotes.Services.ModelUsageLimitException.FromRetryStatus(busy.RootElement) is null, "a moment's rate limit is waited out");
+        using var rate = JsonDocument.Parse("""{"type":"retry","attempt":1,"message":"slow down","action":{"reason":"rate_limit"}}""");
+        Assert(TerminalNotes.Services.ModelUsageLimitException.FromRetryStatus(rate.RootElement) is null, "a rate limit reason is waited out");
+        var now = DateTimeOffset.Now;
+        var fresh = new MySkills.Settings();
+        Assert(MySkillLearning.Resting(fresh, now) is null, "learning may ask the model");
+        Assert(MySkillLearning.Resting(fresh with { PausedUntil = now.AddHours(2) }, now)?.Contains("사용 한도", StringComparison.Ordinal) == true, "it rests at the usage limit");
+        Assert(MySkillLearning.Resting(fresh with { PausedUntil = now.AddMinutes(-1) }, now) is null, "and asks again after it");
+        var counted = fresh;
+        for (int i = 0; i < MySkillLearning.MaxRequestsPerDay; i++) counted = MySkillLearning.Count(counted, now);
+        Assert(MySkillLearning.Resting(counted, now)?.StartsWith("오늘", StringComparison.Ordinal) == true, "and after its requests for the day");
+        Assert(MySkillLearning.Resting(counted, now.AddDays(1)) is null, "until the next day");
         var groups = MySkillLearning.ParseReview($"{MySkillLearning.MergeStart} my-a, my-b | 같은 일\n{MySkillLearning.MergeStart} my-c, my-unknown | x",
             new HashSet<string> { "my-a", "my-b", "my-c" });
         Assert(groups.Count == 1 && groups[0].Names.SequenceEqual(["my-a", "my-b"]) && groups[0].Reason == "같은 일", "review groups name known skills only");
@@ -214,7 +232,8 @@ internal static class Program
         var archived = MySkills.Save(null, "예전 스킬", "", "본문");
         MySkills.Archive(archived.Name);
         var skills = MySkills.List();
-        MySkills.UpdateSettings(settings => settings with { Proposals = [new MySkills.MergeProposal(skills.Select(skill => skill.Name).ToArray(), "릴리스와 보고서", "", "합친 본문", "둘 다 마무리 절차")] });
+        MySkills.UpdateSettings(settings => settings with { Proposals = [new MySkills.MergeProposal(skills.Select(skill => skill.Name).ToArray(), "릴리스와 보고서", "", "합친 본문", "둘 다 마무리 절차")],
+            PausedUntil = DateTimeOffset.Now.AddHours(2) });
         var dialog = new SkillStoreDialog(null);
         dialog.Show();
         await Task.Delay(600);
@@ -226,6 +245,8 @@ internal static class Program
         Assert(texts.Any(text => AutomationProperties.GetAutomationId(text) == "MySkillUsage" && text.Text.StartsWith($"켜짐 2/{MySkills.MaxApplied}", StringComparison.Ordinal)), "the usage of the limits is shown");
         Assert(texts.Any(text => text.Text == "자동") && texts.Any(text => text.Text.Contains("사용 1회", StringComparison.Ordinal)), "a learned skill is marked, uses are shown");
         Assert(Descendants(dialog).OfType<Border>().Any(border => AutomationProperties.GetAutomationId(border) == "MySkillProposal"), "a merge proposal is shown");
+        Assert(texts.Any(text => AutomationProperties.GetAutomationId(text) == "MySkillResting" && text.Text.StartsWith("사용 한도", StringComparison.Ordinal)),
+            "resting at the usage limit is shown beside 자동으로 배우기");
         await SaveImage(dialog, "my-skills.png");
 
         // Add through the editor (replaced here), toggle off, archive view.

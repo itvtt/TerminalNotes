@@ -68,6 +68,11 @@ internal static class MySkills
         public Dictionary<string, string> LearnedUpTo { get; init; } = [];
         /// <summary>Merge proposals of the curator waiting for the user.</summary>
         public List<MergeProposal> Proposals { get; init; } = [];
+        /// <summary>Learning rests until then: the model's usage limit was reached.</summary>
+        public DateTimeOffset? PausedUntil { get; init; }
+        /// <summary>Model requests learning made today (local date), against <see cref="MySkillLearning.MaxRequestsPerDay"/>.</summary>
+        public string? RequestDay { get; init; }
+        public int RequestCount { get; init; }
     }
 
     internal sealed record MergeProposal(string[] Names, string Title, string Description, string Body, string Reason);

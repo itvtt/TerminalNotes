@@ -9439,6 +9439,37 @@ using global::System.Text;
 using global::System.Text.Json;
 
 
+/// <summary>The model's provider refuses until its usage limit comes back (a used-up free tier, quota, credit): not a moment's rate
+/// limit that a retry gets past. <see cref="RetryAt"/> is when OpenCode will try again, when it says.</summary>
+public sealed class ModelUsageLimitException : IOException
+{
+    public DateTimeOffset? RetryAt { get; }
+
+    public ModelUsageLimitException(string message, DateTimeOffset? retryAt) : base(message) => RetryAt = retryAt;
+
+    private static readonly string[] Markers =
+        ["usage exceeded", "usage limit", "free limit", "free tier", "quota", "insufficient", "billing", "credit", "limit reached", "사용 한도", "한도 초과", "한도에 도달"];
+
+    internal static bool IsUsageLimitText(string? text) => text is { Length: > 0 } && Markers.Any(marker => text.Contains(marker, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>From a session status: a retry because of a usage limit (its reason or its message), else null.</summary>
+    internal static ModelUsageLimitException? FromRetryStatus(JsonElement status)
+    {
+        if (status.ValueKind != JsonValueKind.Object || Text(status, "type") != "retry") return null;
+        string message = Text(status, "message") ?? "";
+        string? reason = status.TryGetProperty("action", out var action) && action.ValueKind == JsonValueKind.Object ? Text(action, "reason") : null;
+        if (reason is null || !reason.Contains("limit", StringComparison.OrdinalIgnoreCase) || reason.Contains("rate", StringComparison.OrdinalIgnoreCase))
+            if (!IsUsageLimitText(message)) return null;
+        DateTimeOffset? next = status.TryGetProperty("next", out var at) && at.ValueKind == JsonValueKind.Number && at.TryGetInt64(out long ms) && ms > 0
+            ? DateTimeOffset.FromUnixTimeMilliseconds(ms) : null;
+        return new ModelUsageLimitException("모델 사용 한도에 걸렸습니다 · " + (message.Length > 0 ? message : reason) +
+            (next is { } when ? $" · {when.ToLocalTime():MM-dd HH:mm}에 다시" : ""), next);
+    }
+
+    private static string? Text(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+}
+
 /// <summary>Typed, directory-scoped HTTP access to one headless OpenCode server.</summary>
 public sealed partial class OpenCodeConversationClient : IDisposable
 {
@@ -10042,9 +10073,13 @@ public sealed partial class OpenCodeConversationClient
                 // OpenCode publishes the answer only when it is complete, so a long rewrite shows no text
                 // for minutes. While the session reports busy the model is still working.
                 JsonElement statuses = await ReadStatusAsync(bounded.Token).ConfigureAwait(false);
-                if (statuses.ValueKind == JsonValueKind.Object && statuses.TryGetProperty(helper, out var helperStatus) &&
-                    GetString(helperStatus, "type") is "busy" or "retry")
-                    lastProgressAt = DateTimeOffset.UtcNow;
+                if (statuses.ValueKind == JsonValueKind.Object && statuses.TryGetProperty(helper, out var helperStatus))
+                {
+                    // A used-up usage limit does not pass by retrying (measured 2026-11-12: status retry with action.reason
+                    // free_tier_limit and next = when it comes back): told at once instead of waiting out the timeout.
+                    if (ModelUsageLimitException.FromRetryStatus(helperStatus) is { } limit) throw limit;
+                    if (GetString(helperStatus, "type") is "busy" or "retry") lastProgressAt = DateTimeOffset.UtcNow;
+                }
                 if (DateTimeOffset.UtcNow - lastProgressAt > idle)
                 {
                     stalled = true;

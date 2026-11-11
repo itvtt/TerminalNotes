@@ -12,6 +12,25 @@ internal static class MySkillLearning
     /// <summary>Work with fewer tool calls than this is not learned from (a question and answer, a one-step change).</summary>
     internal const int MinimumToolCalls = 5;
     internal const int DigestLimit = 24_000;
+    /// <summary>Learning and the curator use the same model (and the same usage limit) as the work: at most this many of their
+    /// requests a day, and none while the limit is reached.</summary>
+    internal const int MaxRequestsPerDay = 10;
+    internal static readonly TimeSpan LimitRest = TimeSpan.FromHours(6);
+
+    /// <summary>Why learning does not ask the model now (null: it may).</summary>
+    internal static string? Resting(MySkills.Settings settings, DateTimeOffset now)
+    {
+        if (settings.PausedUntil is { } until && until > now) return $"사용 한도 · {until.ToLocalTime():HH:mm}까지 쉼";
+        if (settings.RequestDay == now.ToLocalTime().ToString("yyyy-MM-dd") && settings.RequestCount >= MaxRequestsPerDay) return $"오늘 {MaxRequestsPerDay}번 · 내일 다시";
+        return null;
+    }
+
+    /// <summary>One request of learning counted for today.</summary>
+    internal static MySkills.Settings Count(MySkills.Settings settings, DateTimeOffset now)
+    {
+        string today = now.ToLocalTime().ToString("yyyy-MM-dd");
+        return settings with { RequestDay = today, RequestCount = settings.RequestDay == today ? settings.RequestCount + 1 : 1 };
+    }
     internal const string None = "<<<TERMINALNOTES_SKILL_NONE>>>", Start = "<<<TERMINALNOTES_SKILL>>>", End = "<<<END_TERMINALNOTES_SKILL>>>";
     internal const string MergeNone = "<<<TERMINALNOTES_MERGE_NONE>>>", MergeStart = "<<<TERMINALNOTES_MERGE>>>", MergeEnd = "<<<END_TERMINALNOTES_MERGE>>>";
 
