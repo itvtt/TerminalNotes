@@ -429,6 +429,19 @@ internal static class StoreLook
           </ControlTemplate></Setter.Value></Setter>
          </Style>
          <!-- The skill store's left list (전체, 사용 중, categories): the chosen one on a raised row with a gold bar and bright text. -->
+         <Style x:Key="StoreChip" TargetType="ToggleButton">
+          <Setter Property="Foreground" Value="{StaticResource Muted}"/><Setter Property="FontSize" Value="13"/><Setter Property="Cursor" Value="Hand"/>
+          <Setter Property="FocusVisualStyle" Value="{StaticResource StoreFocus}"/>
+          <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ToggleButton">
+           <Border x:Name="Chip" Background="Transparent" BorderBrush="#FF3D3D3D" BorderThickness="1" CornerRadius="7">
+            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+           </Border>
+           <ControlTemplate.Triggers>
+            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Chip" Property="Background" Value="#FF1F1F1F"/></Trigger>
+            <Trigger Property="IsChecked" Value="True"><Setter TargetName="Chip" Property="Background" Value="#FF262626"/><Setter TargetName="Chip" Property="BorderBrush" Value="{StaticResource Accent}"/><Setter Property="Foreground" Value="{StaticResource TextPrimary}"/></Trigger>
+           </ControlTemplate.Triggers>
+          </ControlTemplate></Setter.Value></Setter>
+         </Style>
          <Style x:Key="StoreSideItem" TargetType="RadioButton">
           <Setter Property="Foreground" Value="{StaticResource TextSecondary}"/><Setter Property="FontSize" Value="13.5"/>
           <Setter Property="Height" Value="34"/><Setter Property="Padding" Value="12,0,10,0"/><Setter Property="Margin" Value="0,0,0,2"/>

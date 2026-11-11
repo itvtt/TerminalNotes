@@ -38,6 +38,8 @@ internal static class Program
         Console.WriteLine("FAIL " + name);
     }
 
+    private static IReadOnlyList<ExternalAgents.Agent> external = [];
+
     private static async Task RunAsync()
     {
         // The states the board shows.
@@ -75,7 +77,11 @@ internal static class Program
         Directory.CreateDirectory(fixture);
         await File.WriteAllTextAsync(Path.Combine(fixture, "settings.json"), System.Text.Json.JsonSerializer.Serialize(new
             { Workspace = fixture, CodexWorkspace = fixture, SetupCompleted = true, WorkspaceDefaultsVersion = 1 }));
-        var window = new MainWindow(Path.Combine(fixture, "settings.json"), autoStartCodex: false);
+        var window = new MainWindow(Path.Combine(fixture, "settings.json"), autoStartCodex: false)
+        {
+            // Agents in outside terminals: one waiting Claude Code (this PC's own are left out).
+            ExternalScanOverride = _ => external
+        };
         try
         {
             window.Show();
@@ -83,6 +89,9 @@ internal static class Program
             var button = (Button)typeof(MainWindow).GetField("_agentBoardButton", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(window)!;
             Assert(button.Visibility == Visibility.Collapsed, "no terminals, no board button");
             Assert(AutomationProperties.GetAutomationId(button) == "AgentBoardButton", "the board button can be found");
+            external = [new ExternalAgents.Agent(4242, "Claude Code", "PowerShell", false, IntPtr.Zero)];
+            await Task.Delay(3200);
+            Assert(button.Visibility == Visibility.Visible && window.AgentBoardSummary.Length > 0, "an agent in an outside terminal shows the board");
             var tabs = (TabControl)window.FindName("TerminalTabs");
             typeof(MainWindow).GetMethod("CreateProfileTerminal", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, [null]);
             for (int i = 0; i < 40 && tabs.Items.Count == 0; i++) await Task.Delay(100);
@@ -94,7 +103,8 @@ internal static class Program
             button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             await Idle(window);
             var rows = (StackPanel)typeof(MainWindow).GetField("_agentBoardRows", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(window)!;
-            Assert(rows.Children.OfType<Button>().Count() == 1, "the board lists the terminal");
+            Assert(rows.Children.OfType<Button>().Count() == 2, "the board lists the terminal and the outside agent");
+            Assert(rows.Children.OfType<Button>().Select(AutomationProperties.GetName).Contains("Claude Code · PowerShell · 대기"), "the outside agent is listed with its window");
             string? row = rows.Children.OfType<Button>().Select(AutomationProperties.GetName).FirstOrDefault();
             Assert(row is not null && row.StartsWith("01 ", StringComparison.Ordinal) && row.Contains(" · ", StringComparison.Ordinal), "a row names the terminal and its state: " + row);
             Console.WriteLine("summary: " + window.AgentBoardSummary + " | row: " + row);

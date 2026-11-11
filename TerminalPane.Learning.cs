@@ -13,6 +13,12 @@ public sealed partial class TerminalPane
 
     /// <summary>The app is closing while this task terminal's agent works: its server keeps running and is written down (KeptServers),
     /// so opening the task again takes it back. Only task terminals (numbered, with a session) are kept.</summary>
+    /// <summary>This terminal's OpenCode server (for the agent board to tell it from agents in outside terminals).</summary>
+    internal int? ServerProcessId => _headlessOpenCodeHost?.ProcessId is uint id ? (int)id : null;
+
+    /// <summary>The server to search past conversations with, while it runs.</summary>
+    internal Uri? SearchEndpoint => LearningSource is not null && _headlessOpenCodeHost?.IsRunning == true ? NativeOpenCodeEndpoint : null;
+
     internal bool KeepRunningAfterClose()
     {
         if (_disposed || _nativePaneKey is not { } key || !int.TryParse(key, out _) || _headlessSessionId is not { Length: > 0 } session ||

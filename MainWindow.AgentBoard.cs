@@ -113,6 +113,7 @@ public partial class MainWindow
         };
         actions.Children.Insert(0, _agentBoardButton);
         actions.Children.Insert(0, _agentBoardPopup);
+        InitializeHerdrExtras(actions);
         _agentBoardTimer = new DispatcherTimer(TimeSpan.FromSeconds(1), DispatcherPriority.Background, (_, _) => ObserveAgents(), Dispatcher);
         _agentBoardTimer.Start();
         Closed += (_, _) => _agentBoardTimer.Stop();
@@ -164,6 +165,13 @@ public partial class MainWindow
                 case AgentNotice.FinishedQuietly: LearnFrom(state.Pane); break;
             }
         }
+        // Agents in outside terminals count too (working or waiting: their state is read from CPU use).
+        ScanExternalAgents();
+        foreach (var agent in _externalAgents)
+        {
+            var state = agent.Working ? AgentState.Working : AgentState.Waiting;
+            counts[state] = counts.GetValueOrDefault(state) + 1;
+        }
         _agentBoardSummary.Inlines.Clear();
         foreach (var state in new[] { AgentState.Blocked, AgentState.Working, AgentState.Done })
         {
@@ -173,7 +181,7 @@ public partial class MainWindow
                 { Foreground = AgentStateBrush(state), FontWeight = state == AgentState.Blocked ? FontWeights.SemiBold : FontWeights.Normal });
         }
         if (_agentBoardSummary.Inlines.Count == 0) _agentBoardSummary.Inlines.Add(new Run(tabs.Length == 0 ? "에이전트 없음" : "에이전트 대기") { Foreground = AgentStateBrush(AgentState.Waiting) });
-        _agentBoardButton!.Visibility = tabs.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
+        _agentBoardButton!.Visibility = tabs.Length == 0 && _externalAgents.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
         AutomationProperties.SetHelpText(_agentBoardButton, AgentBoardSummary);
         if (_agentBoardPopup?.IsOpen == true) RenderAgentBoard();
     }
@@ -229,7 +237,43 @@ public partial class MainWindow
             };
             _agentBoardRows.Children.Add(row);
         }
-        if (rows.Count == 0)
+        if (_externalAgents.Count > 0)
+        {
+            var heading = new TextBlock { Text = "다른 터미널", FontSize = 12, Margin = new Thickness(8, rows.Count > 0 ? 10 : 2, 8, 4) };
+            heading.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+            _agentBoardRows.Children.Add(heading);
+        }
+        foreach (var external in _externalAgents.OrderByDescending(agent => agent.Working))
+        {
+            var agent = external.Working ? AgentState.Working : AgentState.Waiting;
+            var dot = new System.Windows.Shapes.Ellipse { Width = 8, Height = 8, Fill = AgentStateBrush(agent), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(2, 0, 10, 0) };
+            var name = new TextBlock { Text = external.Name, FontSize = 13.5, TextTrimming = TextTrimming.CharacterEllipsis };
+            name.SetResourceReference(TextBlock.ForegroundProperty, "TextPrimary");
+            var where = new TextBlock { Text = external.Host + " 창", FontSize = 12, Margin = new Thickness(0, 2, 0, 0) };
+            where.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+            var text = new StackPanel();
+            text.Children.Add(name);
+            text.Children.Add(where);
+            var label = new TextBlock { Text = AgentStateLabel(agent), FontSize = 12.5, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(10, 0, 0, 0), Foreground = AgentStateBrush(agent) };
+            var line = new DockPanel();
+            DockPanel.SetDock(dot, Dock.Left);
+            DockPanel.SetDock(label, Dock.Right);
+            line.Children.Add(dot);
+            line.Children.Add(label);
+            line.Children.Add(text);
+            var row = new Button { Content = line, HorizontalContentAlignment = HorizontalAlignment.Stretch, Padding = new Thickness(8, 6, 8, 6), Margin = new Thickness(0, 0, 0, 2),
+                ToolTip = "그 창으로 가기 · 다른 터미널의 상태는 CPU 사용으로 봅니다" };
+            row.SetResourceReference(StyleProperty, "QuietIconButton");
+            AutomationProperties.SetName(row, $"{external.Name} · {external.Host} · {AgentStateLabel(agent)}");
+            IntPtr window = external.Window;
+            row.Click += (_, _) =>
+            {
+                if (_agentBoardPopup is not null) _agentBoardPopup.IsOpen = false;
+                ExternalAgents.Focus(window);
+            };
+            _agentBoardRows.Children.Add(row);
+        }
+        if (rows.Count == 0 && _externalAgents.Count == 0)
         {
             var empty = new TextBlock { Text = "열린 터미널이 없습니다.", Margin = new Thickness(8), FontSize = 13 };
             empty.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
