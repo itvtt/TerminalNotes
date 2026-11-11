@@ -232,9 +232,9 @@ internal static class Program
             {
                 var freshControl = Field<PlanMakerInterviewControl>(dialog, "_interview");
                 failedControl!.RequestFinish();
-                Require(!ReferenceEquals(failedControl, freshControl) && !freshControl.IsFinishRequested &&
-                    !Field<Button>(dialog, "_finish").IsEnabled,
-                    "Retry reused the failed interview control or enabled finish before a live draft.");
+                // Finishing no longer waits for a first draft: it asks for the whole confirmed plan (BuildFinalPlanPrompt).
+                Require(!ReferenceEquals(failedControl, freshControl) && !freshControl.IsFinishRequested,
+                    "Retry reused the failed interview control.");
                 Require(prompt.Contains("original captured prompt", StringComparison.Ordinal) && prompt.Contains(confirmed, StringComparison.Ordinal),
                     "Fresh retry omitted original intent or confirmed answer context.");
                 Require(prompt.Contains("같은 제목과 상위 제목을 그대로 사용", StringComparison.Ordinal) &&
@@ -418,8 +418,9 @@ internal static class Program
                 control = interview;
                 publish = draft;
                 phase = reportPhase;
-                Require(control is not null && !control.IsFinishRequested && !finish.IsEnabled,
-                    "A new interview inherited finish state or allowed premature finish.");
+                // Finish is available from the start of a live interview (it asks for the final plan), not only after a draft.
+                Require(control is not null && !control.IsFinishRequested,
+                    "A new interview inherited finish state.");
                 draft("## Confirmed answer\nCSV export.");
                 control!.SetAwaitingContinuation(true);
                 reportPhase("플랜메이커 · AI가 질문을 멈췄습니다. 질문 계속 또는 플랜으로 돌아가기를 선택하세요.");
@@ -497,6 +498,15 @@ internal static class Program
             var closingControl = Field<PlanMakerInterviewControl>(closing, "_interview");
             Require(closingControl.RecommendedAnswersEnabled, "Close fixture could not enable recommended answers.");
             var args = new System.ComponentModel.CancelEventArgs();
+            Call(closing, "OnClosing", closing, args);
+            // Closing during the interview saves first: it finishes (the final plan request goes to plan.md), it does not cancel.
+            PumpUntil(() => closingControl.IsFinishRequested);
+            Require(args.Cancel && !Field<CancellationTokenSource>(closing, "_cancellation").IsCancellationRequested &&
+                Field<bool>(closing, "_returnAfterFinish") && !closingControl.RecommendedAnswersEnabled,
+                "Closing during the interview did not finish first (whole confirmed plan to plan.md) before closing.");
+            // Closing again without waiting (approved in the confirmation) cancels and keeps the confirmed draft.
+            SetField(closing, "_closeApproved", true);
+            args = new System.ComponentModel.CancelEventArgs();
             Call(closing, "OnClosing", closing, args);
             PumpUntil(() => operation.IsCompleted && closing.Pane.Disposed);
             Require(args.Cancel && !closing.PlanningCompleted &&
@@ -657,7 +667,7 @@ internal static class Program
                 control = interview;
                 publish = draft;
                 phase = reportPhase;
-                Require(control is not null && !control.RecommendedAnswersEnabled && recommended.IsEnabled && !finish.IsEnabled,
+                Require(control is not null && !control.RecommendedAnswersEnabled && recommended.IsEnabled,
                     "A ready interview inherited recommended mode or required a current question to enable it.");
                 return result.Task;
             };
@@ -915,9 +925,9 @@ internal static class Program
                             "A completed Auto Recommand interview must stay open, show completion and offer the return action.");
                     }
                     else
-                        Require(!control.IsFinishRequested && !dialog.CompletedWithoutRemainingDecisions && dialog.IsVisible &&
-                            Field<TextBlock>(dialog, "_status").Text.Contains("Auto Recommand 해제", StringComparison.Ordinal),
-                            "An empty interview finished or did not tell the user Auto Recommand was turned off.");
+                        // Without a marked draft it finishes too: the final request asks the AI for the whole confirmed plan.
+                        Require(control.IsFinishRequested && dialog.CompletedWithoutRemainingDecisions && dialog.IsVisible,
+                            "An interview without a marked draft did not finish through the final plan request.");
                 }
                 finally
                 {

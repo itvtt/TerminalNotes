@@ -274,9 +274,10 @@ internal static partial class Program
             "Explicit continuation replaced the session, reused a request, or reattached its native TUI.");
         Invoke(interview, "RequestFinish");
         string plan = await planning.WaitAsync(TimeSpan.FromSeconds(10));
-        Require(plan.Contains("Confirmed third detail", StringComparison.Ordinal) && transport.Aborts == 1 &&
-            transport.Prompts == 6 && Field<string>(pane, "_headlessSessionId") == "ses_exact_existing",
-            "Finishing a pending question lost confirmed draft, failed cleanup, or submitted again.");
+        Require(plan.Contains("Confirmed third detail", StringComparison.Ordinal) && plan.Contains("Keep existing answers", StringComparison.Ordinal) &&
+            transport.Rejects == 1 && transport.Aborts == 2 && transport.Prompts == 7 && transport.LastPrompt.Contains("finished this planning interview", StringComparison.Ordinal) &&
+            Field<string>(pane, "_headlessSessionId") == "ses_exact_existing",
+            "Finishing a pending question lost confirmed draft, skipped the final plan request, failed cleanup, or submitted again.");
 
         transport.Reset(); transport.InterviewMode = true; transport.StartWithQuestion = true;
         drafts.Clear(); interview = Control();
@@ -288,8 +289,28 @@ internal static partial class Program
         Require(!planning.IsCompleted && transport.Prompts == 1, "Finish discarded an answer still processing or sent a follow-up.");
         transport.CompleteAnswerOnNextStatus("# First detail\nConfirmed purpose.\n\n## Latest answer\nSubmitted answer retained.");
         plan = await planning.WaitAsync(TimeSpan.FromSeconds(10));
-        Require(plan.Contains("Submitted answer retained", StringComparison.Ordinal) && transport.Aborts == 1 && transport.Prompts == 1,
-            "Finish returned a stale draft before the submitted answer drained.");
+        Require(plan.Contains("Submitted answer retained", StringComparison.Ordinal) && transport.Aborts == 1 && transport.Rejects == 0 && transport.Prompts == 2,
+            "Finish returned a stale draft before the submitted answer drained, or skipped the final plan request.");
+
+        // The user types their own message into the planner's terminal mid-interview: the interview goes on with it.
+        transport.Reset(); transport.InterviewMode = true; transport.StartWithQuestion = true;
+        drafts.Clear(); interview = Control();
+        planning = Start(interview);
+        await UntilAsync(() => drafts.Count > 0);
+        transport.BeginAnswer();
+        transport.UserTypes("msg_user_typed", "Also keep a dark theme.");
+        await Task.Delay(700);
+        Require(!planning.IsCompleted && transport.Prompts == 1 && transport.Aborts == 0 && !Paused(interview),
+            "A message typed into the PlanMaker terminal stopped the interview or got another prompt on top.");
+        transport.AnswerTypedWithQuestion("## Typed request\nKeep a dark theme.");
+        await UntilAsync(() => drafts.Count > 0 && drafts[^1].Contains("Keep a dark theme", StringComparison.Ordinal));
+        Require(drafts[^1].Contains("Confirmed purpose", StringComparison.Ordinal) && !planning.IsCompleted && transport.Prompts == 1,
+            "The typed request's answer replaced earlier confirmed drafts or ended the interview.");
+        Invoke(interview, "RequestFinish");
+        plan = await planning.WaitAsync(TimeSpan.FromSeconds(10));
+        Require(plan.Contains("Keep a dark theme", StringComparison.Ordinal) && plan.Contains("Confirmed purpose", StringComparison.Ordinal) &&
+            transport.Aborts == 2 && transport.Prompts == 2 && Field<string>(pane, "_headlessSessionId") == "ses_exact_existing",
+            "Finishing after a typed request lost its draft, submitted again, or did not restore the original session.");
 
         transport.Reset(); transport.InterviewMode = true;
         interview = Control();
@@ -301,7 +322,7 @@ internal static partial class Program
         catch (OperationCanceledException) { }
         Require(transport.Aborts == 1 && !Paused(interview) && Field<string>(pane, "_headlessSessionId") == "ses_exact_existing",
             "Cancellation did not abort only the owned interview and restore its original session.");
-        Console.WriteLine("PASS PlanMaker interview: early-stop follow-up, fresh IDs, third answer, omitted-draft retention, local-input guard, pause/resume, finish draining, pending-question finish, cancellation; fake API only.");
+        Console.WriteLine("PASS PlanMaker interview: early-stop follow-up, fresh IDs, third answer, omitted-draft retention, local-input guard, pause/resume, finish draining, pending-question finish, typed mid-interview request, cancellation; fake API only.");
     }
 
     private static async Task VerifyRecommendedPlanMakerAnswersAsync(TerminalPane pane, FakePlannerTransport transport)
@@ -441,6 +462,8 @@ internal static partial class Program
         internal string[]? RecommendationLabels;
         internal string QuestionSession = PlanningSession;
         internal bool RepeatQuestion, ReplyUncertain, NewerUserRequest;
+        internal int Rejects;
+        internal string LastPrompt => _prompt ?? "";
         internal List<string> SubmittedAnswers = new();
         internal List<string> MessageIds = new();
         private readonly List<object> _history = new();
@@ -453,14 +476,25 @@ internal static partial class Program
             Prompts = 0; Complete = false; _messageId = null; _prompt = null;
             InterviewMode = StartWithQuestion = CurrentQuestion = Busy = PendingPermission = false; Aborts = 0;
             _history.Clear(); MessageIds.Clear(); _response = "# First detail\nConfirmed purpose."; _answerOnStatus = null;
+            _typedPending = false; _typed = 0;
             _configuredModel = AliasProvider + "/" + AliasModel;
             Replies = QuestionReads = QuestionGeneration = 0; RecommendationLabels = null;
-            QuestionSession = PlanningSession; RepeatQuestion = ReplyUncertain = NewerUserRequest = false; SubmittedAnswers.Clear();
+            QuestionSession = PlanningSession; RepeatQuestion = ReplyUncertain = NewerUserRequest = false; SubmittedAnswers.Clear(); Rejects = 0;
         }
         internal void BeginAnswer() { Busy = true; CurrentQuestion = false; Complete = false; }
-        internal void Answer(string draft) { _response = draft; Busy = false; CurrentQuestion = false; Complete = true; }
+        internal void Answer(string draft) { _response = draft; Busy = false; CurrentQuestion = false; Complete = true; _typedPending = false; }
         internal void CompleteAnswerOnNextStatus(string draft) => _answerOnStatus = draft;
-        private object Assistant() => new { info = new { id = "msg_fixture_assistant_" + Prompts, sessionID = PlanningSession,
+        // A message the user typed into the planner's own TUI: OpenCode stores it in the planning session and answers it later.
+        private bool _typedPending;
+        private int _typed;
+        internal void UserTypes(string messageId, string text)
+        {
+            if (_messageId is not null) _history.Add(Assistant());
+            _messageId = messageId; _prompt = text; _typed++; _typedPending = true;
+            Busy = true; CurrentQuestion = false; Complete = false;
+        }
+        internal void AnswerTypedWithQuestion(string draft) { _response = draft; _typedPending = false; Busy = false; CurrentQuestion = true; Complete = false; }
+        private object Assistant() => new { info = new { id = "msg_fixture_assistant_" + Prompts + "_" + _typed, sessionID = PlanningSession,
             parentID = _messageId, role = "assistant", time = new { created = 1, completed = Complete ? (long?)2 : null },
             finish = Complete ? "stop" : null },
             parts = new[] { new { type = "text", text = "<<<TERMINALNOTES_PLAN>>>\n" + _response + "\n<<<END_TERMINALNOTES_PLAN>>>" } } };
@@ -499,7 +533,9 @@ internal static partial class Program
                 }
                 payload = true; status = HttpStatusCode.NoContent;
             }
-            else if (request.Method == HttpMethod.Post && path.EndsWith("/abort", StringComparison.Ordinal)) { Aborts++; payload = true; }
+            else if (request.Method == HttpMethod.Post && path.EndsWith("/abort", StringComparison.Ordinal)) { Aborts++; Busy = false; payload = true; }
+            else if (request.Method == HttpMethod.Post && path.StartsWith("/question/", StringComparison.Ordinal) && path.EndsWith("/reject", StringComparison.Ordinal))
+            { Rejects++; CurrentQuestion = false; payload = true; }
             else if (request.Method == HttpMethod.Post && path.StartsWith("/question/", StringComparison.Ordinal) && path.EndsWith("/reply", StringComparison.Ordinal))
             {
                 using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));
@@ -538,7 +574,7 @@ internal static partial class Program
                 long created = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                 var messages = new List<object>(_history);
                 if (_messageId is not null) messages.Add(new { info = new { id = _messageId, sessionID = PlanningSession, role = "user", time = new { created } }, parts = new[] { new { type = "text", text = _prompt } } });
-                if (InterviewMode && Prompts > 0) messages.Add(Assistant());
+                if (InterviewMode && Prompts > 0 && !_typedPending) messages.Add(Assistant());
                 else if (Complete) messages.Add(new { info = new { id = "msg_fixture_assistant", sessionID = PlanningSession, parentID = _messageId, role = "assistant", time = new { created, completed = created + 1 }, finish = "stop" },
                     parts = new[] { new { type = "text", text = "<<<TERMINALNOTES_PLAN>>>\n# Fixture plan\n<<<END_TERMINALNOTES_PLAN>>>" } } });
                 if (NewerUserRequest) messages.Add(new { info = new { id = "msg_newer_user", sessionID = PlanningSession, role = "user", time = new { created = created + 1000 } }, parts = new[] { new { type = "text", text = "A later user request" } } });

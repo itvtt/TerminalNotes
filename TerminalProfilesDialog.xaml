@@ -477,7 +477,8 @@
                             ToolTip="OpenCode 설정 편집"
                             Width="176" VerticalAlignment="Center" Margin="16,0,0,0"/>
                 </Grid>
-                <Grid Margin="0,18,0,0">
+                <!-- Problems are reported automatically (AutomaticProblemReporter); the manual button is hidden. -->
+                <Grid x:Name="ProblemReportRow" Margin="0,18,0,0" Visibility="Collapsed">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>

@@ -3182,6 +3182,9 @@ public sealed partial class TerminalPane
             string? countedCompletion = null;
             int questionlessCompletions = 0;
             bool wasAwaitingContinuation = false;
+            // Finishing asks once for the whole confirmed plan (BuildFinalPlanPrompt) and returns after that answer.
+            bool finalRequested = false;
+            const string FinalPhase = "플랜메이커 · 확인된 내용을 정리해 plan.md에 저장하는 중입니다.";
             void VerifyRecommendedCycleOwnership()
             {
                 token.ThrowIfCancellationRequested();
@@ -3189,6 +3192,17 @@ public sealed partial class TerminalPane
                     _planMakerSessionId != planningSession || _planMakerInputRevision != recommendedCycleInputRevision ||
                     !CanAnswerRecommendedQuestion() || interview?.RecommendedAnswersEnabled != true || interview.IsFinishRequested))
                     throw new OperationCanceledException("The automatic planning request or its input ownership changed.", token);
+            }
+            // A message the user types into the PlanMaker's terminal continues the interview instead of stopping it
+            // (2026-11-11 사용자: "플랜메이커에서 중간에 내가 입력하면 꺼져버리는데"). Only Loop Full's automatic cycle still stops.
+            string? UserFollowUp(JsonElement response) => completeRecommendedCycle || interview is null ? null :
+                PlanMakerWorkflow.ReadUserFollowUp(response, planningSession!, planningMessage, previousMessages);
+            bool UserTyped(JsonElement response, string stopReason)
+            {
+                if (UserFollowUp(response) is not null) return true;
+                if (PlanMakerWorkflow.HasNewerUserRequest(response, planningSession!, planningMessage))
+                    throw new OperationCanceledException(stopReason, token);
+                return false;
             }
             string? LatestAssistantId(JsonElement response)
             {
@@ -3206,7 +3220,8 @@ public sealed partial class TerminalPane
                 // During the interview each answer returns only its new conditions; an answer that confirms
                 // nothing new returns an empty block, which leaves the draft as it is (Auto Recommand does this often).
                 string? updatedDraft = PlanMakerWorkflow.ReadPlanDraft(response, planningSession!, planningMessage,
-                    previousMessageIds: interview is null ? null : previousMessages, allowEmpty: completeRecommendedCycle || interview is not null);
+                    previousMessageIds: interview is null ? null : previousMessages, allowEmpty: completeRecommendedCycle || interview is not null,
+                    laterMessageId: UserFollowUp(response));
                 if (interview is not null && updatedDraft is not null)
                 {
                     string nativeDraft = updatedDraft;
@@ -3236,9 +3251,25 @@ public sealed partial class TerminalPane
                 OpenCodeConversationClient.VerifyPlanMakerPermissions(await client.GetSessionAsync(planningSession!, token));
                 JsonElement messages = await client.ReadMessagesAsync(planningSession!, token);
                 planningModel ??= OpenCodeConversationClient.ReadPlanMakerRequestModel(messages, planningSession!, planningMessage);
-                if (interview is not null && PlanMakerWorkflow.HasNewerUserRequest(messages, planningSession!, planningMessage))
+                string? followUp = UserFollowUp(messages);
+                if (interview is not null && followUp is null && PlanMakerWorkflow.HasNewerUserRequest(messages, planningSession!, planningMessage))
                     throw new OperationCanceledException("플랜 대화에 새 사용자 요청이 제출되어 자동 질문을 멈췄습니다.", token);
-                ApplyDraft(messages);
+                // A final answer that failed (provider error, unreadable block) keeps what was already confirmed and saved.
+                try { ApplyDraft(messages); }
+                catch (Exception exception) when (finalRequested && lastDraft is { Length: > 0 } && exception is InvalidOperationException or InvalidDataException)
+                { return lastDraft; }
+                // Once OpenCode answers the typed message it becomes the current request, like a continuation;
+                // the earlier request's last response was applied just above.
+                if (followUp is not null && PlanMakerWorkflow.HasResponseTo(messages, planningSession!, followUp))
+                {
+                    previousMessages.Add(planningMessage);
+                    planningMessage = followUp;
+                    followUp = null;
+                    roundHadQuestion = false;
+                    questionlessCompletions = 0;
+                    interview!.SetAwaitingContinuation(false);
+                    ApplyDraft(messages);
+                }
                 string? plan = !completeRecommendedCycle && interview is null
                     ? PlanMakerWorkflow.ReadCompletedPlan(messages, planningSession!, planningMessage) : null;
                 JsonElement statuses = await client.ReadStatusAsync(token);
@@ -3298,7 +3329,7 @@ public sealed partial class TerminalPane
                     }
                     if (string.IsNullOrWhiteSpace(questionId) || attemptedRecommendedQuestions.Contains(questionId))
                         recommendationNotice ??= "플랜메이커 · 전송한 추천 답변의 반영을 확인 중입니다. 필요하면 직접 답변해 주세요.";
-                    else if (!awaitingPermission && CanAnswerRecommendedQuestion())
+                    else if (!awaitingPermission && followUp is null && CanAnswerRecommendedQuestion())
                     {
                         long modeRevision = interview.RecommendedAnswersRevision;
                         long inputRevision = _planMakerInputRevision;
@@ -3389,10 +3420,10 @@ public sealed partial class TerminalPane
                                 token.ThrowIfCancellationRequested();
                                 if (!stillOwned() || _headlessSessionId != planningSession || _planMakerSessionId != planningSession)
                                     throw new OperationCanceledException(token);
-                                if (PlanMakerWorkflow.HasNewerUserRequest(latestMessages, planningSession!, planningMessage))
-                                    throw new OperationCanceledException("플랜 대화에 새 사용자 요청이 제출되어 추천 답변을 멈췄습니다.", token);
+                                bool userTyped = UserTyped(latestMessages, "플랜 대화에 새 사용자 요청이 제출되어 추천 답변을 멈췄습니다.");
                                 VerifyRecommendedCycleOwnership();
-                                if (sameQuestion && !permissionBlocked && interview.RecommendedAnswersEnabled && !interview.IsFinishRequested &&
+                                if (userTyped) recommendationNotice = "플랜메이커 · 입력 중에는 추천 답변을 보내지 않습니다.";
+                                else if (sameQuestion && !permissionBlocked && interview.RecommendedAnswersEnabled && !interview.IsFinishRequested &&
                                     interview.RecommendedAnswersRevision == modeRevision && _planMakerInputRevision == inputRevision && CanAnswerRecommendedQuestion())
                                 {
                                     // Record before POST: a lost transport acknowledgment must never resend this answer.
@@ -3436,7 +3467,9 @@ public sealed partial class TerminalPane
                 }
                 // An answer already submitted in the native TUI must drain before
                 // finishing. A pending next question is a safe stopping boundary.
-                if (!completeRecommendedCycle && interview?.IsFinishRequested == true && interview.CanRequestFinish && (idle || awaitingQuestion) && lastDraft is { Length: > 0 })
+                // A message the user typed meanwhile is answered and applied before the interview finishes.
+                if (!completeRecommendedCycle && interview?.IsFinishRequested == true && interview.CanRequestFinish && (idle || awaitingQuestion) &&
+                    followUp is null)
                 {
                     await _nativeOperationGate.WaitAsync(token);
                     try
@@ -3456,8 +3489,7 @@ public sealed partial class TerminalPane
                             // Read after the safe boundary: an answer may have completed
                             // between the first draft read and its idle/question snapshot.
                             JsonElement finishMessages = await client.ReadMessagesAsync(planningSession!, token);
-                            if (PlanMakerWorkflow.HasNewerUserRequest(finishMessages, planningSession!, planningMessage))
-                                throw new OperationCanceledException("플랜 대화의 사용자 요청이 바뀌었습니다.", token);
+                            bool userTyped = UserTyped(finishMessages, "플랜 대화의 사용자 요청이 바뀌었습니다.");
                             ApplyDraft(finishMessages);
                             JsonElement afterStatuses = await client.ReadStatusAsync(token);
                             JsonElement afterQuestions = await client.ReadQuestionsAsync(token);
@@ -3469,19 +3501,47 @@ public sealed partial class TerminalPane
                                     question.TryGetProperty("id", out var questionId) && questionId.GetString() == finishQuestionId);
                             token.ThrowIfCancellationRequested();
                             if (!stillOwned() || _headlessSessionId != planningSession) throw new OperationCanceledException(token);
-                            if ((afterIdle || sameQuestion) && !HasLocalPendingInput() && interview.CanRequestFinish)
+                            if (!userTyped && (afterIdle || sameQuestion) && !HasLocalPendingInput() && interview.CanRequestFinish)
                             {
                                 // Re-read once more after the last safe-state check so a
                                 // response finishing during those reads is included too.
                                 JsonElement finalMessages = await client.ReadMessagesAsync(planningSession!, token);
-                                if (PlanMakerWorkflow.HasNewerUserRequest(finalMessages, planningSession!, planningMessage))
-                                    throw new OperationCanceledException("플랜 대화의 사용자 요청이 바뀌었습니다.", token);
+                                userTyped = UserTyped(finalMessages, "플랜 대화의 사용자 요청이 바뀌었습니다.");
                                 ApplyDraft(finalMessages);
-                                if (sameQuestion || PlanMakerWorkflow.HasCompletedAssistant(finalMessages, planningSession!, planningMessage))
+                                if (!userTyped && (sameQuestion || PlanMakerWorkflow.HasCompletedAssistant(finalMessages, planningSession!, planningMessage)))
                                 {
                                     token.ThrowIfCancellationRequested();
-                                    if (!stillOwned() || _headlessSessionId != planningSession || HasLocalPendingInput()) throw new OperationCanceledException(token);
-                                    if (interview.CanRequestFinish && _planMakerInputRevision == finishInputRevision) return lastDraft!;
+                                    if (!stillOwned() || _headlessSessionId != planningSession) throw new OperationCanceledException(token);
+                                    // Text still in the prompt only delays finishing (the next poll checks again).
+                                    if (!HasLocalPendingInput() && interview.CanRequestFinish && _planMakerInputRevision == finishInputRevision)
+                                    {
+                                        if (finalRequested) return lastDraft ?? "";
+                                        // Before finishing, one request for the whole confirmed plan: plan.md gets the conversation even
+                                        // when the model never marked it (2026-11-11 사용자: 플랜메이커가 끝나도 plan.md에 저장이 안 됨).
+                                        // An open question is dismissed and the session stopped first so the request runs at once.
+                                        if (sameQuestion && finishQuestionId is not null)
+                                        {
+                                            try { await client.RejectQuestionAsync(finishQuestionId, token); }
+                                            catch (Exception exception) when (exception is System.Net.Http.HttpRequestException or IOException or InvalidDataException)
+                                            { System.Diagnostics.Trace.WriteLine(exception); }
+                                            await client.AbortAsync(planningSession!, token);
+                                            for (int wait = 0; wait < 40; wait++)
+                                            {
+                                                JsonElement stopped = await client.ReadStatusAsync(token);
+                                                if (stopped.ValueKind == JsonValueKind.Object && (!stopped.TryGetProperty(planningSession!, out var stoppedStatus) ||
+                                                    stoppedStatus.TryGetProperty("type", out var stoppedKind) && stoppedKind.GetString() == "idle")) break;
+                                                await Task.Delay(250, token);
+                                            }
+                                        }
+                                        string finalMessage = OpenCodeRecoveryClient.CreateMessageId();
+                                        await client.SendPlanMakerAsync(planningSession!, PlanMakerWorkflow.BuildFinalPlanPrompt(), finalMessage, token, planningModel);
+                                        previousMessages.Add(planningMessage);
+                                        planningMessage = finalMessage;
+                                        finalRequested = true;
+                                        roundHadQuestion = false;
+                                        reportPhase(FinalPhase);
+                                        lastPhase = FinalPhase;
+                                    }
                                 }
                             }
                         }
@@ -3540,7 +3600,7 @@ public sealed partial class TerminalPane
                 if (plan is not null && idle && !awaitingQuestion && !awaitingPermission) return plan;
                 if (interview is null && idle && !awaitingQuestion && !awaitingPermission && completed)
                     throw new InvalidDataException("OpenCode가 완성된 플랜 형식을 반환하지 않았습니다. 질문 답변과 응답을 확인한 뒤 다시 시도하세요.");
-                if (!completeRecommendedCycle && interview is not null && idle && !awaitingQuestion && !awaitingPermission && completed)
+                if (!completeRecommendedCycle && interview is not null && followUp is null && idle && !awaitingQuestion && !awaitingPermission && completed)
                 {
                     if (countedCompletion != planningMessage)
                     {
@@ -3571,9 +3631,9 @@ public sealed partial class TerminalPane
                             token.ThrowIfCancellationRequested();
                             if (!stillOwned() || _headlessSessionId != planningSession || _planMakerSessionId != planningSession)
                                 throw new OperationCanceledException("플랜 생성 세션의 연결이 바뀌었습니다.", token);
-                            if (PlanMakerWorkflow.HasNewerUserRequest(latestMessages, planningSession!, planningMessage))
-                                throw new OperationCanceledException("플랜 대화에 새 사용자 요청이 제출되어 자동 질문을 멈췄습니다.", token);
-                            if (!interview.IsFinishRequested && latestIdle && !latestBlocked &&
+                            // The user's own message already continues the interview: no continuation prompt on top of it.
+                            bool userTyped = UserTyped(latestMessages, "플랜 대화에 새 사용자 요청이 제출되어 자동 질문을 멈췄습니다.");
+                            if (!userTyped && !interview.IsFinishRequested && latestIdle && !latestBlocked &&
                                 PlanMakerWorkflow.HasCompletedAssistant(latestMessages, planningSession!, planningMessage) &&
                                 !HasLocalPendingInput() && !_manualInputOverride && !IsUserInputBlocked &&
                                 IsReady && IsRunning && !_failed)
@@ -3591,7 +3651,8 @@ public sealed partial class TerminalPane
                     }
                 }
                 bool awaitingContinuation = interview?.IsAwaitingContinuation == true;
-                string phase = interview?.IsFinishRequested == true
+                string phase = finalRequested ? FinalPhase
+                    : interview?.IsFinishRequested == true
                     ? "플랜메이커 · 현재 답변 반영을 기다린 뒤 질문을 마칩니다."
                     : recommendationNotice is not null && awaitingQuestion
                     ? recommendationNotice

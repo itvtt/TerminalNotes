@@ -2437,6 +2437,8 @@ internal sealed class PlanMakerDialog : Window
     private readonly TaskCompletionSource _closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private bool _cleaned;
     private bool _cleanupStarted;
+    // RequestClose approved this close (a window close during the interview saves first, see OnClosing)
+    private bool _closeApproved;
     private bool _retrying;
     private string _confirmedGeneratedDraft = "";
     private PlanMakerInterviewControl? _interview;
@@ -2585,7 +2587,7 @@ internal sealed class PlanMakerDialog : Window
         _finish.Click += (_, _) =>
         {
             if (CanReturnToCompletedDraft()) { Close(); return; }
-            if (!CanControlInterview() || !_interviewReady || !_attemptHasDraft || !_interview!.CanRequestFinish) return;
+            if (!CanControlInterview() || !_interviewReady || !_interview!.CanRequestFinish) return;
             _interview!.RequestFinish();
             if (!_interview.IsFinishRequested) { UpdateInterviewActions(); return; }
             _returnAfterFinish = true;
@@ -2647,6 +2649,20 @@ internal sealed class PlanMakerDialog : Window
         Closing += OnClosing;
         Closed += (_, _) => _closed.TrySetResult();
         _statusNotifications = new StatusNotificationPresenter(this);
+    }
+
+    /// <summary>
+    /// Its own window above the main window (2026-11-11 사용자: "플랜메이커를 터미널과 탭으로 만들지말고 별도의 모달창으로 … 여러개
+    /// 플랜메이커 실행될수있게"): owned so it stays above the main window, but modeless, so the main window, terminals, other tasks and
+    /// other PlanMakers all stay usable. Each further PlanMaker opens a step lower and to the right.
+    /// </summary>
+    internal void PlaceAbove(Window owner, int cascade)
+    {
+        if (owner.IsLoaded && owner.IsVisible) Owner = owner;
+        var area = SystemParameters.WorkArea;
+        double step = 28 * Math.Max(0, cascade % 8);
+        Left = Math.Max(area.Left, Math.Min(Left + step, area.Right - Width));
+        Top = Math.Max(area.Top, Math.Min(Top + step, area.Bottom - Height));
     }
 
     private void CenterOnOwner(Window owner)
@@ -2716,13 +2732,30 @@ internal sealed class PlanMakerDialog : Window
             BorderBrush = (Brush)new BrushConverter().ConvertFromString("#2B2B2B")!, BorderThickness = new Thickness(0, 1, 0, 1) };
     }
 
-    /// <summary>Closes the planner (window or docked panel); confirms while the interview is still running.</summary>
+    /// <summary>
+    /// Closes the planner. During the interview closing saves first, like 플랜으로 돌아가기: the whole confirmed plan goes to
+    /// plan.md and then the window closes. Closing again while that runs asks whether to close without waiting.
+    /// </summary>
     internal void RequestClose()
     {
-        if (_attemptActive && !_cleanupStarted && !_cancellation.IsCancellationRequested &&
-            !AppMessageDialog.Confirm(DialogOwner, "플랜메이커 닫기",
-                "질문 대화가 진행 중입니다. 닫으면 대화가 종료됩니다.\n\n지금까지 반영된 플랜 초안은 유지됩니다.", "닫기"))
-            return;
+        if (_attemptActive && !_cleanupStarted && !_cancellation.IsCancellationRequested)
+        {
+            if (!_returnAfterFinish && CanControlInterview() && _interviewReady && _interview!.CanRequestFinish)
+            {
+                _interview.RequestFinish();
+                if (_interview.IsFinishRequested)
+                {
+                    _returnAfterFinish = true;
+                    SetPlanningStatus("질문 마무리 중… · 확인된 내용을 plan.md에 저장한 뒤 닫습니다.");
+                    return;
+                }
+            }
+            if (!AppMessageDialog.Confirm(DialogOwner, "플랜메이커 닫기", _returnAfterFinish
+                    ? "plan.md 저장이 아직 끝나지 않았습니다. 기다리지 않고 닫을까요?\n\n이미 반영된 내용은 저장되어 있습니다."
+                    : "질문 대화가 진행 중입니다. 닫으면 대화가 종료됩니다.\n\n이미 반영된 내용은 저장되어 있습니다.", "닫기"))
+                return;
+        }
+        _closeApproved = true;
         if (IsDocked) Close();
         else SystemCommands.CloseWindow(this);
     }
@@ -2811,7 +2844,7 @@ internal sealed class PlanMakerDialog : Window
         // The initial status is painted before the footer is constructed.
         if (_finish is null || _continue is null || _recommendedAnswers is null) return;
         bool active = CanControlInterview();
-        _finish.IsEnabled = (active && _interviewReady && _attemptHasDraft && _interview!.CanRequestFinish) ||
+        _finish.IsEnabled = (active && _interviewReady && _interview!.CanRequestFinish) ||
             (!_returnAfterFinish && CanReturnToCompletedDraft());
         _continue.Visibility = active && _interview!.IsAwaitingContinuation && !_interview.HasContinuationRequest
             ? Visibility.Visible : Visibility.Collapsed;
@@ -2846,10 +2879,10 @@ internal sealed class PlanMakerDialog : Window
         string? autoStop = interview.AutoStopReason;
         if (autoStop is null && !(interview.IsAwaitingContinuation && !interview.HasContinuationRequest)) return;
         if (autoStop is not null) _autoStopReason = autoStop;
-        if (!_attemptHasDraft || !interview.CanRequestFinish)
+        if (!interview.CanRequestFinish)
         {
             interview.SetRecommendedAnswersEnabled(false);
-            SetPlanningWarning("Auto Recommand 해제 · 더 이어갈 결정이 없습니다. 반영된 초안이 없으니 질문 계속 또는 닫기를 선택하세요.");
+            SetPlanningWarning("Auto Recommand 해제 · 더 이어갈 결정이 없습니다. 질문 계속 또는 플랜으로 돌아가기를 선택하세요.");
             return;
         }
         interview.RequestFinish();
@@ -3133,6 +3166,12 @@ internal sealed class PlanMakerDialog : Window
         if (_cleaned) return;
         e.Cancel = true;
         if (_cleanupStarted) return;
+        // Alt+F4 or the taskbar during the interview: the same as the close button (save, then close)
+        if (!_closeApproved && _attemptActive && !_cancellation.IsCancellationRequested)
+        {
+            _ = Dispatcher.BeginInvoke((Action)RequestClose);
+            return;
+        }
         _cleanupStarted = true;
         _interview?.SetRecommendedAnswersEnabled(false);
         UpdateInterviewActions();

@@ -151,7 +151,7 @@ internal static class Program
             var panes=new List<TerminalPane>{ownerPane};
             for(int i=0;i<2;i++)
             {
-                ((Button)window.FindName("NewTerminalButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Call(window,"CreateProfileTerminal",new object?[]{null});
                 await Until(()=>Task.FromResult(tabs.Items.Count==i+2&&tabs.SelectedItem is TabItem selected&&Pane(selected).IsReady&&Pane(selected).IsRunning&&Pane(selected).IsVisible&&Pane(selected).ActualWidth>0&&Pane(selected).ActualHeight>0),"native + terminal creates ready visible pane "+(i+1));
                 var newTab=(TabItem)tabs.SelectedItem;
                 extras.Add(newTab);
@@ -454,7 +454,13 @@ internal static class Program
             ownerPane.FocusTerminal();
             await Until(async ()=>await ownerBrowser.ExecuteScriptAsync("document.activeElement===terminal.textarea")=="true",
                 "original pane receives WebView keyboard focus");
+            // Ctrl+Shift+T and + 터미널 open a separate PowerShell window (recorded here); the in-app pane comes from CreateProfileTerminal.
+            var launchedPowerShell=new List<string>();
+            window.GetType().GetField("LaunchPowerShellWindow",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(window,(Action<string>)(directory=>launchedPowerShell.Add(directory)));
             await SendBrowserCtrlShiftTAsync(ownerBrowser);
+            await Until(()=>Task.FromResult(launchedPowerShell.Count==1),"Ctrl+Shift+T opens a PowerShell window");
+            Assert(string.Equals(launchedPowerShell[0],ownerPane.WorkingDirectory,StringComparison.OrdinalIgnoreCase),"the PowerShell window opens in the focused pane's folder");
+            Call(window,"CreateProfileTerminal",ownerPane);
             await Until(()=>Task.FromResult(tabs.Items.Count>originalCount),"Ctrl+Shift+T adds an independent terminal");
             extras.AddRange(tabs.Items.Cast<TabItem>().Where(tab=>!ReferenceEquals(tab,ownerTab)));
             Assert(tabs.Items.Count==originalCount+1,"Ctrl+Shift+T creates exactly one additional pane");
@@ -472,6 +478,8 @@ internal static class Program
             AssertVisibleLayout(ownerPane,shortcutPane);
 
             ((Button)window.FindName("NewTerminalButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert(launchedPowerShell.Count==2&&tabs.Items.Count==originalCount+1,"+ 터미널 opens a PowerShell window, not a pane");
+            Call(window,"CreateProfileTerminal",new object?[]{null});
             await Until(()=>Task.FromResult(tabs.Items.Count>originalCount+1),"the explicit + terminal action creates another pane");
             extras.AddRange(tabs.Items.Cast<TabItem>().Where(tab=>!ReferenceEquals(tab,ownerTab)&&!extras.Contains(tab)));
             Assert(tabs.Items.Count==originalCount+2,"the + terminal action creates exactly one additional pane");
@@ -2095,7 +2103,7 @@ internal static class Program
             Call(window, "ArrangeSingleProjectViews");
             Assert(views[second].Visibility == Visibility.Visible && views[first].Visibility == Visibility.Hidden &&
                 ReferenceEquals(Pane(secondTab), panes[1]), "ending a drag restores only assigned views and preserves the session");
-            foreach (int capacity in new[] { 1, 2, 3, 4, 5, 6 })
+            foreach (int capacity in new[] { 1, 2, 3, 4, 5, 6, 8 })
             {
                 Call(window, "SetTerminalLayout", capacity);
                 var deck = Field<Grid>(window, "_taskDeck");
@@ -2780,8 +2788,8 @@ internal static class Program
                 Call(window, "CloseTerminal", pickerTab, pickerPane);
             }
             Field<RadioButton>(window, "_normalTasksTab").IsChecked = true;
-            Call(window, "SetTerminalLayout", 6);
-            for (int slot = 0; slot < 6; slot++)
+            Call(window, "SetTerminalLayout", 8);
+            for (int slot = 0; slot < 8; slot++)
             {
                 if (layout.Slots[slot] is not null) continue;
                 string project = Path.Combine(fixture, "occupied-" + slot);
@@ -2789,18 +2797,18 @@ internal static class Program
                 AddFixture(project);
                 Call(window, "AssignProjectToSlot", project, slot);
             }
-            await Until(() => Task.FromResult((bool)Call(window, "CanCreateNewProject")!), "ready with six occupied terminals");
+            await Until(() => Task.FromResult((bool)Call(window, "CanCreateNewProject")!), "ready with eight occupied terminals");
             fullSlots = layout.Slots.ToArray();
             existingTabs = tabs.Items.Cast<TabItem>().ToArray();
             Assert(!(bool)Call(window, "EnsureStartedProjectSlotVisible", Path.Combine(fixture, "ninth-task"))! &&
-                layout.Slots.SequenceEqual(fullSlots) && Field<int>(window, "_splitCapacity") == 6 &&
-                ((TextBlock)window.FindName("StatusLabel")).Text.Contains("6칸이 모두 사용 중입니다"),
-                "starting a ninth task reports full capacity and preserves all six slot assignments");
+                layout.Slots.SequenceEqual(fullSlots) && Field<int>(window, "_splitCapacity") == 8 &&
+                ((TextBlock)window.FindName("StatusLabel")).Text.Contains("8칸이 모두 사용 중입니다"),
+                "starting a ninth task reports full capacity and preserves all eight slot assignments");
             Call(window, "CreateNewProject", "ninth-task");
             Assert(layout.Slots.SequenceEqual(fullSlots) && tabs.Items.Cast<TabItem>().SequenceEqual(existingTabs) &&
-                Field<int>(window, "_splitCapacity") == 6 && existingTabs.All(tab => views[Pane(tab).WorkingDirectory].Visibility == Visibility.Visible) &&
+                Field<int>(window, "_splitCapacity") == 8 && existingTabs.All(tab => views[Pane(tab).WorkingDirectory].Visibility == Visibility.Visible) &&
                 taskRows.Contains(Path.Combine(fixture, "ninth-task")),
-                "adding a ninth task leaves all six terminals and their visible positions intact");
+                "adding a ninth task leaves all eight terminals and their visible positions intact");
             await Until(() => Task.FromResult((bool)Call(window, "CanCreateNewProject")!), "ninth task plan loaded");
             Call(window, "CloseAllTerminals", false);
             foreach (string placed in layout.Slots.Where(project => project is not null).Cast<string>().ToArray()) layout.Remove(placed);
@@ -3206,7 +3214,7 @@ internal static class Program
         typeof(MainWindow).GetField("_workspace", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, fixture);
         foreach (string project in projects) Directory.CreateDirectory(project);
         int capacity = int.TryParse(Environment.GetEnvironmentVariable("TERMINALNOTES_UI_DESIGN_LAYOUT"), out int requestedCapacity) &&
-            new[] { 1, 2, 3, 4, 5, 6 }.Contains(requestedCapacity) ? requestedCapacity : 2;
+            new[] { 1, 2, 3, 4, 5, 6, 8 }.Contains(requestedCapacity) ? requestedCapacity : 2;
         if (double.TryParse(Environment.GetEnvironmentVariable("TERMINALNOTES_UI_DESIGN_SIDEBAR_WIDTH"), out double sidebarWidth))
             Call(window, "LoadTaskSidebarSettings", false, sidebarWidth);
         if (Environment.GetEnvironmentVariable("TERMINALNOTES_UI_DESIGN_EMPTY") == "1")

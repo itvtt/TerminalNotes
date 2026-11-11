@@ -53,7 +53,7 @@ internal static class IndependentTerminalSmoke
             async Task<TabItem> Add()
             {
                 int count = tabs.Items.Count;
-                ((Button)window.FindName("NewTerminalButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Call(window, "CreateProfileTerminal", new object?[] { null });
                 await Until(() => tabs.Items.Count == count + 1 && tabs.SelectedItem is TabItem tab && Pane(tab).IsReady && Pane(tab).IsRunning,
                     "independent terminal starts", 60);
                 var result = (TabItem)tabs.SelectedItem;

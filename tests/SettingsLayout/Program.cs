@@ -61,7 +61,8 @@ internal static class Program
                 CheckFooter(settings, footer);
                 scroll.ScrollToBottom();
                 await Flush();
-                CheckVisibleInScroll((Button)settings.FindName("AnalyzeLogsButton"), scroll);
+                // Problems are reported automatically: the manual 문제 보내기 row stays hidden.
+                Check(((FrameworkElement)settings.FindName("ProblemReportRow")).Visibility == Visibility.Collapsed, "settings hide the manual problem report button");
                 CheckVisibleInScroll((Button)settings.FindName("EditOpenCodeConfigButton"), scroll);
                 CheckFooter(settings, footer);
                 SaveImage(settings, Path.Combine(artifacts, "settings-minimum.png"));

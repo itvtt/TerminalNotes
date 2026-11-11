@@ -8,7 +8,7 @@
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
     <PlatformTarget>x64</PlatformTarget>
-    <Version>1.8.0</Version>
+    <Version>1.8.3</Version>
     <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
     <DefaultItemExcludes>$(DefaultItemExcludes);relay\**;tests\**;artifacts\**;dist\**;TerminalEngine\**;TerminalTransport\**;TerminalDesktop\**;installer\**;out\**;build\**</DefaultItemExcludes>
     <DefineConstants>$(DefineConstants);TN_WPF</DefineConstants>
@@ -69,16 +69,22 @@
       <_RelayHostLine Include="@(_RelayEnvLine)" Condition="$([System.String]::Copy('%(Identity)').StartsWith('RELAY_HOST='))" />
       <_RelayPortLine Include="@(_RelayEnvLine)" Condition="$([System.String]::Copy('%(Identity)').StartsWith('RELAY_PORT='))" />
       <_RelayKeyLine Include="@(_RelayEnvLine)" Condition="$([System.String]::Copy('%(Identity)').StartsWith('RELAY_INGEST_KEY='))" />
+      <!-- RELAY_URL: the whole server address (e.g. https://api.example.com/terminalnotes) when it is reached under another URL;
+           it wins over RELAY_HOST and RELAY_PORT -->
+      <_RelayUrlLine Include="@(_RelayEnvLine)" Condition="$([System.String]::Copy('%(Identity)').StartsWith('RELAY_URL='))" />
     </ItemGroup>
     <PropertyGroup>
       <_RelayHost>@(_RelayHostLine)</_RelayHost>
       <_RelayPort>@(_RelayPortLine)</_RelayPort>
       <_RelayKey>@(_RelayKeyLine)</_RelayKey>
+      <_RelayUrlEnv>@(_RelayUrlLine)</_RelayUrlEnv>
+      <_RelayUrlEnv Condition="'$(_RelayUrlEnv)' != ''">$(_RelayUrlEnv.Substring(10).Trim())</_RelayUrlEnv>
       <_RelayHost Condition="'$(_RelayHost)' != ''">$(_RelayHost.Substring(11).Trim())</_RelayHost>
       <_RelayPort Condition="'$(_RelayPort)' != ''">$(_RelayPort.Substring(11).Trim())</_RelayPort>
       <_RelayPort Condition="'$(_RelayPort)' == ''">2003</_RelayPort>
       <_RelayKey Condition="'$(_RelayKey)' != ''">$(_RelayKey.Substring(17).Trim())</_RelayKey>
       <_RelayUrl Condition="'$(_RelayHost)' != ''">http://$(_RelayHost):$(_RelayPort)</_RelayUrl>
+      <_RelayUrl Condition="'$(_RelayUrlEnv)' != ''">$(_RelayUrlEnv)</_RelayUrl>
       <_RelayConfigPath>$(IntermediateOutputPath)report-relay.json</_RelayConfigPath>
     </PropertyGroup>
     <WriteLinesToFile File="$(_RelayConfigPath)" Overwrite="true" WriteOnlyWhenDifferent="true"

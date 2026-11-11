@@ -41,13 +41,9 @@ internal static class Program
                 settings.Show();
                 settings.UpdateLayout();
                 var open = (Button)settings.FindName("AnalyzeLogsButton");
-                Check(open.IsVisible && open.IsEnabled, "settings analysis entry is available");
-                // Small settings windows expose lower sections through the existing scroll viewer.
-                open.BringIntoView();
-                await settings.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
-                settings.UpdateLayout();
-                Check(open.TransformToAncestor(settings).Transform(new Point(0, open.ActualHeight)).Y < settings.ActualHeight,
-                    "analysis entry is reachable by scrolling at minimum settings size");
+                // Problems are sent automatically now: the settings entry is hidden; the dialog itself still works (opened directly).
+                Check(!open.IsVisible && ((FrameworkElement)settings.FindName("ProblemReportRow")).Visibility == Visibility.Collapsed,
+                    "settings hide the manual problem report entry");
                 SaveImage(settings, Path.Combine(folder, "settings.png"));
 
                 _ = settings.Dispatcher.BeginInvoke(new Action(() => open.RaiseEvent(new RoutedEventArgs(Button.ClickEvent))));
@@ -111,6 +107,39 @@ internal static class Program
                 AppContext.SetData("TerminalNotes.ReportRelayUrl", null);
                 Check(!File.Exists(settingsPath), "sending a report never saves or rewrites app settings");
                 Console.WriteLine("PASS settings entry, report header/description/background analysis, privacy, minimum layout, relay send");
+
+                // Automatic reports: new errors, an abnormal shutdown and a frozen screen count; information, old events and the
+                // reporter's own events do not. The report carries the lines the API server analyzes.
+                string daily = Path.Combine(folder, "auto-daily");
+                Directory.CreateDirectory(daily);
+                var since = DateTimeOffset.UtcNow.AddMinutes(-30);
+                string Line(string name, string severity, DateTimeOffset at) =>
+                    $"{{\"schemaVersion\":1,\"timestamp\":\"{at:O}\",\"event\":\"{name}\",\"severity\":\"{severity}\"}}";
+                File.WriteAllLines(Path.Combine(daily, "today.jsonl"), new[]
+                {
+                    Line("terminal_lifecycle_fault", "error", since.AddMinutes(5)),
+                    Line("terminal_lifecycle_fault", "error", since.AddMinutes(6)),
+                    Line("session.previous_abnormal_shutdown", "warning", since.AddMinutes(1)),
+                    Line("dispatcher_unresponsive", "information", since.AddMinutes(7)),
+                    Line("crash_handler", "fatal", since.AddMinutes(8)),
+                    Line("session.heartbeat", "information", since.AddMinutes(9)),
+                    Line("report_send_failed", "error", since.AddMinutes(10)),
+                    Line("auto_report_failed", "error", since.AddMinutes(11)),
+                    Line("old_failure", "error", since.AddMinutes(-60)),
+                    "{not json"
+                });
+                var found = AutomaticProblemReporter.Find(daily, since);
+                Check(found is not null && found.Kinds["오류"] == 2 && found.Kinds["비정상 종료"] == 1 && found.Kinds["화면 멈춤"] == 1 &&
+                    found.Kinds["치명적 오류"] == 1 && !found.Events.ContainsKey("old_failure") && !found.Events.ContainsKey("report_send_failed") &&
+                    !found.Events.ContainsKey("auto_report_failed") && found.Latest == since.AddMinutes(8),
+                    "automatic reports count new errors, crashes, abnormal shutdowns and freezes, not old or own events");
+                Check(AutomaticProblemReporter.Find(daily, since.AddMinutes(8)) is null, "nothing newer than the last report sends nothing");
+                string auto = AutomaticProblemReporter.BuildReport(found!, "(분석)", "고급", DateTimeOffset.Now);
+                Check(auto.StartsWith(AutomaticProblemReporter.Title, StringComparison.Ordinal) && auto.Contains("\n문제: 오류 2 · ", StringComparison.Ordinal) &&
+                    auto.Contains("문제 이벤트: terminal_lifecycle_fault ×2", StringComparison.Ordinal) &&
+                    auto.Contains("[어떤 문제가 있었나요]" + Environment.NewLine + "자동 보고 · 오류 2", StringComparison.Ordinal) && auto.Contains("앱 버전: v", StringComparison.Ordinal),
+                    "an automatic report has the title, summary, 문제 and 문제 이벤트 lines the API server reads");
+                Console.WriteLine("PASS automatic problem reports: new problems only, own events ignored, server-readable report lines");
                 Console.WriteLine("UI screenshots: " + folder);
                 result = 0;
             }

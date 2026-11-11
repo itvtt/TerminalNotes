@@ -386,9 +386,8 @@ internal static class Program
         try
         {
             await probeEntered.Task.WaitAsync(TimeSpan.FromSeconds(15));
-            var newTerminal = (Button)window.FindName("NewTerminalButton");
-            newTerminal.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
-            newTerminal.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            Call(window, "CreateProfileTerminal", new object?[] { null });
+            Call(window, "CreateProfileTerminal", new object?[] { null });
             releaseProbe.TrySetResult(false);
             await UntilStartupSettlesAsync(window, () => checks == 1 && confirmations == 1);
             Require(Tabs(window).Items.Count == 0 && installs == 0,

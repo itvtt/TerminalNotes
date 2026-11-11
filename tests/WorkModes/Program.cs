@@ -100,7 +100,8 @@ internal static class Program
             Check((bool)Call(fixture.Window, "SetWorkMode", false)!, "Returning to Advanced failed.");
             Check((int)Field(fixture.Window, "_splitCapacity")! == 6 && layout.Slots[5] == hidden,
                 "Advanced must restore the previous split count and hidden slots.");
-            // 분할 is one button; its window offers the six splits as drawings (no numbers), and five is three over two wider cells.
+            // 분할 is one button; its window offers the seven splits (1 to 6 and 8) as drawings (no numbers), five is three over
+            // two wider cells and eight is 4×2.
             // The skill store is only for the master accounts (MASTER_USERS): another account does not see its button.
             var storeUsers = typeof(MainWindow).Assembly.GetType("TerminalNotes.SkillStoreUsers")!;
             var storeOverride = storeUsers.GetField("AccountOverride", BindingFlags.Static | BindingFlags.NonPublic)!;
@@ -125,9 +126,10 @@ internal static class Program
             var pickerType = typeof(MainWindow).Assembly.GetType("TerminalNotes.TerminalLayoutPicker")!;
             var picker = (Window)Activator.CreateInstance(pickerType, BindingFlags.Instance | BindingFlags.NonPublic, null, [6], null)!;
             var choices = ((IEnumerable<Button>)pickerType.GetProperty("Choices", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(picker)!).ToList();
-            Check(choices.Count == 6 && choices.Select((choice, index) => choice.Content is Grid drawing &&
-                    drawing.Children.OfType<Border>().Count() == index + 1 && !drawing.Children.OfType<TextBlock>().Any()).All(drawn => drawn),
-                "The split window must draw the six layouts, one to six cells, without numbers.");
+            int[] offered = [1, 2, 3, 4, 5, 6, 8];
+            Check(choices.Count == offered.Length && choices.Select((choice, index) => choice.Content is Grid drawing &&
+                    drawing.Children.OfType<Border>().Count() == offered[index] && !drawing.Children.OfType<TextBlock>().Any()).All(drawn => drawn),
+                "The split window must draw the seven layouts, one to six and eight cells, without numbers.");
             picker.ShowActivated = false;
             picker.WindowStartupLocation = WindowStartupLocation.Manual;
             picker.Left = picker.Top = -20000;
@@ -142,8 +144,26 @@ internal static class Program
                 cells.Skip(3).All(cell => Grid.GetRow(cell) == 1 && Grid.GetColumnSpan(cell) == 3) && Grid.GetColumn(cells[4]) == 3 &&
                 ((Border)fixture.Window.FindName("TerminalLayoutIcon")).Child is Grid icon && icon.Children.Count == 5,
                 "Five must be three cells on top of two wider ones, and the 분할 button must draw it.");
-            // Previews: the window of drawings (5 chosen) and the 분할 button.
-            var shown = (Window)Activator.CreateInstance(pickerType, BindingFlags.Instance | BindingFlags.NonPublic, null, [5], null)!;
+            var eightPicker = (Window)Activator.CreateInstance(pickerType, BindingFlags.Instance | BindingFlags.NonPublic, null, [6], null)!;
+            var eightChoices = ((IEnumerable<Button>)pickerType.GetProperty("Choices", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(eightPicker)!).ToList();
+            eightPicker.ShowActivated = false;
+            eightPicker.WindowStartupLocation = WindowStartupLocation.Manual;
+            eightPicker.Left = eightPicker.Top = -20000;
+            eightPicker.Dispatcher.BeginInvoke(() => eightChoices[6].RaiseEvent(new RoutedEventArgs(Button.ClickEvent)));
+            Check(eightPicker.ShowDialog() == true && (int?)pickerType.GetProperty("Chosen", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(eightPicker) == 8,
+                "Clicking the last drawing did not choose eight.");
+            Call(fixture.Window, "ChangeTerminalLayout", 8, false);
+            cells = deck.Children.OfType<Border>().Where(cell => cell.AllowDrop && cell.Visibility == Visibility.Visible).ToList();
+            Check((int)Field(fixture.Window, "_splitCapacity")! == 8 && deck.ColumnDefinitions.Count == 4 && deck.RowDefinitions.Count == 2 &&
+                cells.Count == 8 && cells.Select((cell, slot) => Grid.GetRow(cell) == slot / 4 && Grid.GetColumn(cell) == slot % 4 &&
+                    Grid.GetColumnSpan(cell) == 1).All(placed => placed) &&
+                ((Border)fixture.Window.FindName("TerminalLayoutIcon")).Child is Grid eightIcon && eightIcon.Children.Count == 8,
+                "Eight must be four cells over four, and the 분할 button must draw it.");
+            Call(fixture.Window, "ChangeTerminalLayout", 7, false);
+            Check((int)Field(fixture.Window, "_splitCapacity")! == 8, "Seven cells must use the eight split.");
+            Call(fixture.Window, "ChangeTerminalLayout", 5, false);
+            // Previews: the window of drawings (8 chosen) and the 분할 button.
+            var shown = (Window)Activator.CreateInstance(pickerType, BindingFlags.Instance | BindingFlags.NonPublic, null, [8], null)!;
             SavePreview((FrameworkElement)shown.Content, "split-picker.png");
             SavePreview((FrameworkElement)fixture.Window.FindName("TerminalLayoutSelector"), "split-button.png", 5);
             SavePreview((FrameworkElement)fixture.Window.FindName("TerminalLayoutIcon"), "split-icon.png", 12);

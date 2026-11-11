@@ -2190,7 +2190,7 @@ public partial class MainWindow
             _renderedTabs = pageSessions.Select(session => session.Tab).ToArray();
             if (_initialized)
             {
-                Width = Services.TerminalSplitLayouts.Width(_capacity) switch { 1 => 240, 2 => 280, _ => 344 };
+                Width = Services.TerminalSplitLayouts.Width(_capacity) switch { 1 => 240, 2 => 280, 3 => 344, _ => 432 };
                 Height = rows == 1 ? 128 : 200;
             }
             UpdateNavigation();
@@ -4983,8 +4983,8 @@ public partial class MainWindow
             if (!await EnsureProjectOpenCodeReadyAsync(runtime, runtime.IntentVersion, planning.Token)) return;
             var dialog = new PlanMakerDialog(this, project, session.InitialDraft, planning.Token);
             _planMakerDialogs.Add(project, dialog);
-            // 고급·플랜 모드: dock into the PlanMaker view so several interviews run side by side.
-            if (CanDockPlanMakers) DockPlanMaker(dialog);
+            // Every PlanMaker is its own window above the main window, not a docked tab; several run at once (PlaceAbove).
+            dialog.PlaceAbove(this, _planMakerDialogs.Count - 1);
             string originalDraft = session.InitialDraft;
             string expectedDraft = originalDraft;
             bool StillOwned() => !_closing && !_closePending && !planning.IsCancellationRequested &&
@@ -5213,6 +5213,29 @@ public partial class MainWindow
 
     private void CreateProfileTerminal(TerminalPane? source = null) =>
         AddTerminalCore(explicitNew: true, workingDirectory: source?.WorkingDirectory);
+
+    // + 터미널 · Ctrl+Shift+T: a separate PowerShell window in the work folder, not a terminal inside Terminal Notes
+    // (2026-11-11 사용자: "+터미널 하면 터미널노트에 추가하지말고 그냥 파워쉘로 해서 띄우게해"). Tests replace the launch.
+    internal Action<string> LaunchPowerShellWindow = directory =>
+        global::System.Diagnostics.Process.Start(new global::System.Diagnostics.ProcessStartInfo("powershell.exe", "-NoLogo -NoExit")
+        { WorkingDirectory = directory, UseShellExecute = true })?.Dispose();
+
+    private void OpenPowerShellWindow(TerminalPane? source = null)
+    {
+        if (_closing || _closePending) return;
+        string directory = source?.WorkingDirectory ?? ActiveTerminal?.WorkingDirectory ?? CurrentProjectPath;
+        if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
+            directory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        try
+        {
+            LaunchPowerShellWindow(directory);
+            SetStatus("PowerShell 창을 열었습니다 · " + directory);
+        }
+        catch (Exception exception) when (exception is global::System.ComponentModel.Win32Exception or InvalidOperationException or IOException)
+        {
+            SetAttentionStatus("PowerShell 창을 열지 못했습니다 · " + exception.Message);
+        }
+    }
 
     private void TerminalProfiles_Click(object sender, RoutedEventArgs e)
     {
@@ -13860,7 +13883,7 @@ public partial class MainWindow
     }
 }
 
-/// <summary>분할: the six splits drawn as their layouts (no numbers), three to a row; a click picks one, Esc closes.</summary>
+/// <summary>분할: the seven splits (1 to 6 and 8) drawn as their layouts (no numbers), four to a row; a click picks one, Esc closes.</summary>
 internal sealed class TerminalLayoutPicker : Window
 {
     private static readonly ControlTemplate ChoiceTemplate = (ControlTemplate)System.Windows.Markup.XamlReader.Parse(
@@ -13884,7 +13907,7 @@ internal sealed class TerminalLayoutPicker : Window
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         Background = Solid("#121212");
         var gold = Solid("#E5C07B");
-        var grid = new System.Windows.Controls.Primitives.UniformGrid { Columns = 3, Margin = new Thickness(14) };
+        var grid = new System.Windows.Controls.Primitives.UniformGrid { Columns = 4, Margin = new Thickness(14) };
         foreach (int count in TerminalSplitLayouts.Counts)
         {
             bool selected = count == current;
@@ -13908,7 +13931,7 @@ internal sealed class TerminalLayoutPicker : Window
         }
         Content = new Border { Child = grid, BorderBrush = Solid("#333333"), BorderThickness = new Thickness(1) };
         PreviewKeyDown += (_, e) => { if (e.Key == System.Windows.Input.Key.Escape) { e.Handled = true; DialogResult = false; } };
-        Loaded += (_, _) => _choices[Math.Clamp(current, 1, _choices.Count) - 1].Focus();
+        Loaded += (_, _) => _choices[Math.Max(0, Array.IndexOf(TerminalSplitLayouts.Counts, TerminalSplitLayouts.Normalize(current)))].Focus();
     }
 
     /// <summary>A split's cells as rounded boxes in a <paramref name="width"/>×<paramref name="height"/> frame.</summary>
@@ -14845,6 +14868,7 @@ public partial class MainWindow : Window
         AppVersionLabel.Text = "v" + ApplicationDiagnostics.DisplayVersion;
         InitializeAnnouncements();
         StartSystemMeter();
+        StartAutomaticProblemReports();
         ContentRendered += (_, _) => _ = CheckForUpdatesAtStartupAsync();
         ContentRendered += (_, _) => _ = TakeOutWithdrawnSkillsAtStartAsync();
         _settings = ReadSettings();
@@ -15276,7 +15300,7 @@ public partial class MainWindow : Window
         Activate();
         _ = Dispatcher.BeginInvoke(() => FocusTerminalUnlessEditing(ActiveTerminal), DispatcherPriority.Background);
     }
-    private void NewTerminal_Click(object sender, RoutedEventArgs e) => CreateProfileTerminal();
+    private void NewTerminal_Click(object sender, RoutedEventArgs e) => OpenPowerShellWindow();
     internal bool ActivateFromLauncher(string? project)
     {
         if (_closing || _closePending) return false;
@@ -15579,7 +15603,7 @@ public partial class MainWindow : Window
             if (shift && key == "t") StartBasicTerminal();
             return;
         }
-        switch (key) { case "t" when shift: CreateProfileTerminal(source); break; case "m" when shift: ToggleNotes(); break; }
+        switch (key) { case "t" when shift: OpenPowerShellWindow(source); break; case "m" when shift: ToggleNotes(); break; }
     }
     private void SetStatus(string message) => SetStatusCore(message, reopenDuplicate: true);
     private void SetProgressStatus(string message) => SetStatusCore(message, reopenDuplicate: false);

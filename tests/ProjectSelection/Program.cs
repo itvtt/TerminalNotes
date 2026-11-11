@@ -189,14 +189,14 @@ internal static class Program
             }
             Assert(HasDistinctProjectGroup(firstTab, firstProject) && HasDistinctProjectGroup(secondTab, secondProject),
                 "same-named single-terminal project groups retain distinct project paths");
-            ((Button)window.FindName("NewTerminalButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Call(window, "CreateProfileTerminal", new object?[] { null });
             await Until(() => tabs.Items.Count == 3 && ReferenceEquals(tabs.SelectedItem, secondTab), "new terminal action reuses selected project terminal");
             Assert(Pane(secondTab).WorkingDirectory == secondProject,
                 "normal terminal action stays in the selected project's folder");
             tabs.SelectedItem = firstTab;
             Assert(Property<string>(window, "CurrentProjectPath") == firstProject,
                 "manually selecting a terminal updates the active project target");
-            ((Button)window.FindName("NewTerminalButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Call(window, "CreateProfileTerminal", new object?[] { null });
             await Until(() => tabs.Items.Count == 3 && ReferenceEquals(tabs.SelectedItem, firstTab), "new terminal action follows the selected project terminal");
             Assert(Pane(firstTab).WorkingDirectory == firstProject,
                 "terminal action follows the project of the manually selected terminal");
