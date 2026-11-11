@@ -83,6 +83,8 @@ internal static class Program
         Assert(ScheduledJobs.List().Count == 0, "a job can be deleted");
     }
 
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")] private static extern bool FreeConsole();
+
     private static bool Refused(ScheduledJobs.Job job)
     {
         try { ScheduledJobs.Save(job); return false; }
@@ -109,6 +111,17 @@ internal static class Program
         Assert(found.SequenceEqual([111, 122]), "outside agents are the ones typed in other terminals: " + string.Join(",", found));
         Assert(ExternalAgents.Find(all, app, new HashSet<int>()).Select(entry => entry.Id).Contains(130), "a kept server not held by a terminal shows");
         Assert(ExternalAgents.Snapshot().Any(entry => entry.Id == Environment.ProcessId), "the process snapshot sees this process");
+        // Live on this PC: whatever agents run in other terminals now, twice (the second has a CPU sample to judge working). Like the
+        // app (no console of its own), this test lets go of its console first when its output goes to a file.
+        if (Console.IsOutputRedirected) FreeConsole();
+        ExternalAgents.Scan(new HashSet<int>());
+        Thread.Sleep(3000);
+        var live = ExternalAgents.Scan(new HashSet<int>());
+        foreach (var agent in live) Console.WriteLine($"live: {agent.Name} pid {agent.ProcessId} in {agent.Host} window {(agent.Window != IntPtr.Zero ? "yes" : "no")} {(agent.Working ? "작업 중" : "대기")}");
+        var running = ExternalAgents.Snapshot().Where(entry => ExternalAgents.Known.ContainsKey(entry.Exe)).ToList();
+        Console.WriteLine("agent processes now: " + string.Join(", ", running.Select(entry => $"{entry.Exe}:{entry.Id}<-{entry.Parent}")));
+        Assert(running.Count == 0 || live.Count > 0, "agents running in terminals on this PC are found");
+        Assert(live.All(agent => agent.Host != "explorer"), "Explorer is never named as the terminal");
     }
 
     private static void Search()

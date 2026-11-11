@@ -91,6 +91,7 @@ internal static class MySkillLearning
             - 비밀번호, 토큰, 키, 개인 정보, 접속 주소는 쓰지 않는다.
             - 이 작업에만 맞는 파일 이름이나 값 대신 일반적인 절차로 쓴다.
             - 지침은 한국어로, 6000자 이내로, 단계·명령·확인 방법·주의점 중심으로 쓴다. 실패했던 방법과 그 이유도 짧게 남긴다.
+            - 지침 본문 첫 줄에 제목(# 제목)을 다시 쓰지 않는다. 제목은 title에만 쓴다.
 
             정리할 것이 없으면 정확히 이 한 줄만 답한다:
             {{None}}
@@ -116,10 +117,11 @@ internal static class MySkillLearning
     }
 
     /// <summary>A new version of an existing skill that keeps what it said and adds what was learned.</summary>
-    internal static string MergePrompt(IEnumerable<(string Title, string Description, string Body)> parts) => $$"""
+    internal static string MergePrompt(IEnumerable<(string Title, string Description, string Body)> parts, int limit = 6000) => $$"""
         너는 나만의 스킬 정리 담당이다. 아래 스킬들을 하나의 스킬로 합쳐라. 도구는 쓰지 말고 아래 형식으로만 답한다.
-        - 내용은 빠짐없이 합치되 겹치는 것은 한 번만 쓴다. 서로 다르면 더 최근의 것(뒤에 있는 것)을 따르고 차이를 짧게 남긴다.
-        - 한국어로, 6000자 이내로, 단계·명령·확인 방법·주의점 중심으로 쓴다.
+        - 내용은 빠짐없이 합치되 겹치는 것은 한 번만 쓴다. 서로 다르면 더 최근의 것(뒤에 있는 것)을 따른다.
+        - 결과는 처음부터 하나였던 것처럼 지침만 쓴다. 합친 과정, 스킬 번호, 원래 스킬들의 차이는 쓰지 않는다.
+        - 한국어로, 반드시 {{limit}}자 이내로, 단계·명령·확인 방법·주의점 중심으로 쓴다. 넘치면 예시와 설명부터 줄인다. 본문 첫 줄에 제목(# 제목)을 다시 쓰지 않는다.
         - 비밀번호, 토큰, 키, 개인 정보, 접속 주소는 쓰지 않는다.
 
         {{Start}}
@@ -161,6 +163,8 @@ internal static class MySkillLearning
         var fields = head.Split('\n').Select(line => line.Split(':', 2)).Where(pair => pair.Length == 2)
             .GroupBy(pair => pair[0].Trim().ToLowerInvariant()).ToDictionary(group => group.Key, group => group.First()[1].Trim());
         string title = fields.GetValueOrDefault("title") ?? "";
+        // SKILL.md puts the title on top: a body that opens with it again (models do) loses that line.
+        body = Regex.Replace(body, @"\A#\s+[^\n]*\n+", match => Similar(match.Value.Trim('#', ' ', '\n'), title) ? "" : match.Value).Trim();
         if (title.Length == 0 || body.Length == 0) return null;
         string? update = fields.GetValueOrDefault("update") is { Length: > 0 } named && MySkills.IsMine(named) ? named : null;
         return new Lesson(fields.GetValueOrDefault("name") ?? "", update, title, fields.GetValueOrDefault("description") ?? "", body);
@@ -176,6 +180,9 @@ internal static class MySkillLearning
                 .Where(known.Contains).Distinct().ToArray(), Reason: pair.Length > 1 ? pair[1].Trim() : ""))
             .Where(group => group.Names.Length >= 2)
             .Take(3).ToList();
+
+    private static bool Similar(string heading, string title) =>
+        heading.Length > 0 && (heading.Contains(title, StringComparison.OrdinalIgnoreCase) || title.Contains(heading, StringComparison.OrdinalIgnoreCase));
 
     private static string? Id(JsonElement item) => item.TryGetProperty("info", out var info) ? Text(info, "id") : null;
 

@@ -7,6 +7,8 @@ using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 
 [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("TerminalNotes.MySkillsTests")]
+[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("TerminalNotes.LiveVerifyTests")]
+[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("TerminalNotes.AppLiveTests")]
 
 namespace TerminalNotes;
 

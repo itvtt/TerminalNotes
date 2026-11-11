@@ -434,6 +434,7 @@ public sealed partial class TerminalPane : Grid, IDisposable
                     _headlessOpenCodeHost!.AdoptOnStart(kept.ProcessId);
                     _keptSessionId = kept.SessionId;
                     _keptProcessId = kept.ProcessId;
+                    WasKeptRunning = true;
                 }
                 if (useProjectContext) InitializeAutoResume(nativeEndpoint, planDocumentPath);
                 _openCodeSnapshot = _openCodeStatus.Snapshot;
@@ -1683,7 +1684,10 @@ public sealed partial class TerminalPane
             var host = _headlessOpenCodeHost ?? throw new InvalidOperationException("OpenCode server is unavailable.");
             var client = _headlessOpenCodeClient ?? throw new InvalidOperationException("OpenCode client is unavailable.");
             _resourceAdmissionRequested.TrySetResult();
-            using var admission = await TerminalStartupAdmission.AcquireSharedAsync(UpdateResourceAdmissionWait, HeadlessLifetimeCancellation);
+            // Taking back a kept server starts no server: its memory is already in use (and is what makes a small PC look full), so
+            // waiting for room would wait forever (measured 2026-11-12: "메모리 여유를 기다리는 중" for good). Only the TUI comes.
+            using var admission = _keptProcessId is not null ? null
+                : await TerminalStartupAdmission.AcquireSharedAsync(UpdateResourceAdmissionWait, HeadlessLifetimeCancellation);
             HeadlessLifetimeCancellation.ThrowIfCancellationRequested();
             UpdateResourceAdmissionWait(null);
             _resourceAdmissionCompletion.TrySetResult(null);
@@ -1713,7 +1717,7 @@ public sealed partial class TerminalPane
             ReportLifecycleStage("native_server_started");
             Ready?.Invoke();
             StatusChanged?.Invoke(_usesNativeOpenCodeTui ? "OpenCode TUI 화면 실행 중 · " + WorkingDirectory : "OpenCode 준비 완료 · " + WorkingDirectory);
-            admission.Dispose();
+            admission?.Dispose();
             await RefreshNativeStateAsync();
         }
         catch (OperationCanceledException exception) when (HeadlessLifetimeCancellation.IsCancellationRequested || _disposed)

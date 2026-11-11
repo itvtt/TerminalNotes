@@ -62,7 +62,7 @@ public partial class MainWindow
     // Every half minute: a due job opens its task's terminal and, once the agent is free, gets its instruction.
     private void RunDueJobs()
     {
-        if (_closing || _closePending || !RunsJobs) return;
+        if (_closing || _closePending || !RunsJobs || !_openCodeReady) return;
         var now = DateTimeOffset.Now;
         foreach (var job in ScheduledJobs.List())
         {
@@ -83,7 +83,7 @@ public partial class MainWindow
             }
             if (!Directory.Exists(job.Project)) { ScheduledJobs.MarkRun(job.Id, now, "건너뜀 · 태스크 폴더가 없습니다"); continue; }
             TerminalPane pane;
-            try { pane = ((TerminalTabState)EnsureSingleProjectTerminal(CanonicalProjectPath(job.Project)).Tag).Pane; }
+            try { pane = OpenTaskTerminal(job.Project); }
             catch (Exception exception) when (exception is InvalidOperationException or IOException) { continue; }
             if (!pane.IsReady || AgentStateOf(pane.Activity, pane.HasCompletedWork) is AgentState.Working or AgentState.Blocked) continue;
             _ = SendJobAsync(pane, job);

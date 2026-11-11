@@ -15300,6 +15300,7 @@ public partial class MainWindow : Window
     private void RestoreFromTray()
     {
         if (_closing) return;
+        BringBackFromBackgroundWork();
         if (!IsVisible) Show();
         if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
         Activate();
@@ -15718,7 +15719,7 @@ public partial class MainWindow : Window
                 }
             }
             if (!await ConfirmDocumentChangeAsync()) return;
-            if (TerminalTabs.Items.Cast<TabItem>().Any(t => ((TerminalTabState)t.Tag).Pane.IsRunning) && MessageBox.Show(this, "앱을 닫으면 열려 있는 모든 터미널과 실행 중인 프로그램이 종료됩니다. 닫을까요?", "Terminal Notes 종료", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+            if (TerminalTabs.Items.Cast<TabItem>().Any(t => ((TerminalTabState)t.Tag).Pane.IsRunning) && MessageBox.Show(this, ExitConfirmation(), "Terminal Notes 종료", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
             // The user closed the app on purpose: running Loops do not restart at the next start (a crash, an update
             // or a Windows restart keeps them, see MainWindow.LoopWatchdog.cs).
             ForgetLoopResume();

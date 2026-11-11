@@ -70,10 +70,8 @@ public partial class MainWindow
         if (lesson.Update is { } update && MySkills.Get(update) is { } existing)
         {
             // Same subject as a skill already there: one new version holding both.
-            string merged = await client.CompleteToolLessPromptAsync("Terminal Notes · 스킬 합치기",
-                MySkillLearning.MergePrompt([(existing.Title, existing.Description, existing.Body), (lesson.Title, lesson.Description, lesson.Body)]),
-                model, token, TimeSpan.FromMinutes(6), TimeSpan.FromMinutes(2));
-            if (MySkillLearning.ParseLesson(merged) is not { } combined) return null;
+            if (await MergeAsync(client, [(existing.Title, existing.Description, existing.Body), (lesson.Title, lesson.Description, lesson.Body)], model, token)
+                is not { } combined) return null;
             saved = MySkills.Save(existing.Name, combined.Title, combined.Description, combined.Body);
         }
         else saved = MySkills.Save(MySkills.NameFor(lesson.Name, lesson.Title), lesson.Title, lesson.Description, lesson.Body, learned: true, project: project);
@@ -83,27 +81,51 @@ public partial class MainWindow
         return saved;
     }
 
-    /// <summary>The curator: which skills say the same, each group with its merged text, kept as proposals for the user.</summary>
-    internal static async Task ReviewMySkillsAsync(OpenCodeConversationClient client, string? model, CancellationToken token)
+    internal sealed record Review(string Answer, int Groups, IReadOnlyList<string> Dropped);
+
+    /// <summary>The curator: which skills say the same, each group with its merged text, kept as proposals for the user. Returns what
+    /// it did (for the diagnostics and tests).</summary>
+    internal static async Task<Review> ReviewMySkillsAsync(OpenCodeConversationClient client, string? model, CancellationToken token)
     {
         var skills = MySkills.List();
         string answer = await client.CompleteToolLessPromptAsync("Terminal Notes · 스킬 정리", MySkillLearning.ReviewPrompt(skills), model, token,
             TimeSpan.FromMinutes(4), TimeSpan.FromMinutes(2));
         var proposals = new List<MySkills.MergeProposal>();
-        foreach (var (names, reason) in MySkillLearning.ParseReview(answer, skills.Select(skill => skill.Name).ToHashSet(StringComparer.Ordinal)))
+        var dropped = new List<string>();
+        var groups = MySkillLearning.ParseReview(answer, skills.Select(skill => skill.Name).ToHashSet(StringComparer.Ordinal));
+        foreach (var (names, reason) in groups)
         {
             var members = names.Select(MySkills.Get).OfType<MySkills.Skill>().ToList();
             if (members.Count < 2) continue;
-            string merged = await client.CompleteToolLessPromptAsync("Terminal Notes · 스킬 합치기",
-                MySkillLearning.MergePrompt(members.Select(member => (member.Title, member.Description, member.Body))), model, token,
-                TimeSpan.FromMinutes(6), TimeSpan.FromMinutes(2));
-            if (MySkillLearning.ParseLesson(merged) is { } lesson && lesson.Body.Length <= MySkills.MaxBodyChars)
-                proposals.Add(new MySkills.MergeProposal(members.Select(member => member.Name).ToArray(), lesson.Title, lesson.Description, lesson.Body, reason));
+            var parts = members.Select(member => (member.Title, member.Description, member.Body)).ToList();
+            var problems = new List<string>();
+            var lesson = await MergeAsync(client, parts, model, token, problems);
+            if (lesson is null) { dropped.Add(string.Join("+", names) + ": " + string.Join(" / ", problems)); continue; }
+            proposals.Add(new MySkills.MergeProposal(members.Select(member => member.Name).ToArray(), lesson.Title, lesson.Description, lesson.Body, reason));
         }
         MySkills.UpdateSettings(current => current with
         {
             LastReview = DateTimeOffset.UtcNow, LearnedSinceReview = 0,
             Proposals = current.Proposals.Where(old => !proposals.Any(proposal => proposal.Names.Intersect(old.Names).Any())).Concat(proposals).TakeLast(5).ToList()
         });
+        return new Review(answer, groups.Count, dropped);
+    }
+
+    /// <summary>One skill from several: asked again, shorter, when the first answer is over the length or out of the format (measured
+    /// 2026-11-12: three related skills, one of them long, came back over the limit and the proposal was lost).</summary>
+    internal static async Task<MySkillLearning.Lesson?> MergeAsync(OpenCodeConversationClient client, IReadOnlyList<(string Title, string Description, string Body)> parts,
+        string? model, CancellationToken token, List<string>? problems = null)
+    {
+        foreach (int limit in new[] { 6000, 3500 })
+        {
+            string merged = await client.CompleteToolLessPromptAsync("Terminal Notes · 스킬 합치기", MySkillLearning.MergePrompt(parts, limit), model, token,
+                TimeSpan.FromMinutes(6), TimeSpan.FromMinutes(2));
+            var lesson = MySkillLearning.ParseLesson(merged);
+            if (lesson is not null && lesson.Body.Length <= MySkills.MaxBodyChars) return lesson;
+            problems?.Add(lesson is null
+                ? $"형식 아님 ({merged.Length}자: {merged.Trim()[..Math.Min(160, merged.Trim().Length)].ReplaceLineEndings(" ")})"
+                : $"너무 김 ({lesson.Body.Length}자)");
+        }
+        return null;
     }
 }

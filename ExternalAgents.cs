@@ -62,7 +62,7 @@ internal static class ExternalAgents
             bool working = Samples.TryGetValue(entry.Id, out var last) && now > last.At &&
                 (cpu - last.Cpu).TotalMilliseconds / (now - last.At) > WorkingCpu;
             Samples[entry.Id] = (cpu, now);
-            var (window, host) = HostOf(entry, all);
+            var (window, host) = ConsoleHost(entry.Id) is { Window: not 0 } console ? console : HostOf(entry, all);
             result.Add(new Agent(entry.Id, Known[entry.Exe], host, working, window));
         }
         foreach (int gone in Samples.Keys.Where(id => !alive.Contains(id)).ToList()) Samples.Remove(gone);
@@ -92,12 +92,49 @@ internal static class ExternalAgents
         catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception) { return TimeSpan.Zero; }
     }
 
-    // The first ancestor with a window: the console or Windows Terminal it runs in.
+    private static readonly Dictionary<int, (IntPtr Window, string Host)> Consoles = [];
+
+    /// <summary>The window an agent's console shows in, asked of Windows (measured 2026-11-12: Windows 11 hands consoles to Windows
+    /// Terminal, so the shell has no window and its parent is Explorer). Attaching to the agent's console for a moment gives its console
+    /// window; with Windows Terminal that is a hidden stand-in owned by the terminal's window, which is the one to bring forward. Once
+    /// per agent. Only a process without a console of its own can attach (the app; a console test cannot).</summary>
+    internal static (IntPtr Window, string Host) ConsoleHost(int processId)
+    {
+        if (Consoles.TryGetValue(processId, out var known) && (known.Window == IntPtr.Zero || IsWindow(known.Window))) return known;
+        (IntPtr Window, string Host) found = (IntPtr.Zero, "");
+        if (GetConsoleWindow() == IntPtr.Zero && AttachConsole((uint)processId))
+        {
+            try
+            {
+                IntPtr console = GetConsoleWindow();
+                if (console != IntPtr.Zero)
+                {
+                    IntPtr owner = GetAncestor(console, 3); // GA_ROOTOWNER
+                    IntPtr window = owner != IntPtr.Zero && IsWindowVisible(owner) ? owner : console;
+                    if (!IsWindowVisible(window) && Process.GetProcessesByName("WindowsTerminal").FirstOrDefault() is { MainWindowHandle: not 0 } terminal)
+                        window = terminal.MainWindowHandle;
+                    found = (window, HostName(ProcessNameOf(window)));
+                }
+            }
+            finally { FreeConsole(); }
+        }
+        Consoles[processId] = found;
+        return found;
+    }
+
+    private static string ProcessNameOf(IntPtr window)
+    {
+        GetWindowThreadProcessId(window, out uint id);
+        try { using var process = Process.GetProcessById((int)id); return process.ProcessName + ".exe"; }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException) { return "terminal"; }
+    }
+
+    // The first ancestor with a window: the console or terminal it runs in (Explorer, which starts things, is not one).
     private static (IntPtr Window, string Host) HostOf(Entry entry, IReadOnlyList<Entry> all)
     {
         var byId = all.GroupBy(item => item.Id).ToDictionary(group => group.Key, group => group.First());
         var seen = new HashSet<int>();
-        for (var current = entry; seen.Add(current.Id); )
+        for (var current = entry; seen.Add(current.Id) && !current.Exe.Equals("explorer.exe", StringComparison.OrdinalIgnoreCase); )
         {
             try
             {
@@ -114,7 +151,7 @@ internal static class ExternalAgents
     private static string HostName(string exe) => exe.ToLowerInvariant() switch
     {
         "windowsterminal.exe" => "Windows Terminal", "powershell.exe" or "pwsh.exe" => "PowerShell", "cmd.exe" => "명령 프롬프트",
-        "code.exe" => "VS Code", _ => System.IO.Path.GetFileNameWithoutExtension(exe)
+        "conhost.exe" or "openconsole.exe" => "콘솔", "code.exe" => "VS Code", _ => System.IO.Path.GetFileNameWithoutExtension(exe)
     };
 
     internal static List<Entry> Snapshot()
@@ -150,4 +187,11 @@ internal static class ExternalAgents
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr window);
     [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr window, int command);
     [DllImport("user32.dll")] private static extern bool IsIconic(IntPtr window);
+    [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr window);
+    [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("user32.dll")] private static extern IntPtr GetAncestor(IntPtr window, uint flags);
+    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+    [DllImport("kernel32.dll")] private static extern IntPtr GetConsoleWindow();
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool AttachConsole(uint processId);
+    [DllImport("kernel32.dll")] private static extern bool FreeConsole();
 }
