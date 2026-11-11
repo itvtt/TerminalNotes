@@ -3014,6 +3014,11 @@ internal sealed class PlanMakerDialog : Window
 #endif
         pane.SetAutoResumeEnabled(false);
         pane.EnableResourceAdmissionRunOnce();
+        // Keys typed while it connects are ignored, not sent to another conversation, and never stop the PlanMaker.
+        pane.HoldInputUntilPlanningStarts(() => Dispatcher.BeginInvoke(() =>
+        {
+            if (!_cleanupStarted) SetPlanningStatus("플랜메이커 전용 터미널 연결 중… · 첫 질문이 나오면 입력하세요.");
+        }));
         return pane;
     }
 

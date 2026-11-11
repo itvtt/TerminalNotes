@@ -242,8 +242,23 @@ internal static partial class Program
         transport.Reset(); transport.InterviewMode = true;
         object interview = Control();
         int oldAttaches = attaches();
+        // Server status in the corner: quiet (a dot only) while the server answers and input is open; a reason when input is blocked.
+        string ServerLabel() => (string)typeof(TerminalPane).GetProperty("ServerStatusLabel", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(pane)!;
+        await UntilAsync(() => ServerLabel().Length == 0);
+        void BlockInput(bool blocked) => typeof(TerminalPane).GetProperty("IsUserInputBlocked", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(pane, blocked);
+        BlockInput(true);
+        await UntilAsync(() => ServerLabel() == "입력 막힘 · 응답 처리 중");
+        BlockInput(false);
+        await UntilAsync(() => ServerLabel().Length == 0);
+        // Keys typed while the PlanMaker connects are ignored (nothing pending, nothing cancelled) and the hold ends with the first request.
+        int ignoredNotices = 0;
+        Invoke(pane, "HoldInputUntilPlanningStarts", (Action)(() => ignoredNotices++));
+        Require(Invoke(pane, "HandleNativeSurfaceInput", "typed while connecting", false, null) is null &&
+            !(bool)Invoke(pane, "HasLocalPendingInput")! && ignoredNotices == 1,
+            "Keys typed before the PlanMaker interview started reached the terminal or were not reported as ignored.");
         Task<string> planning = Start(interview);
         await UntilAsync(() => transport.Prompts == 2);
+        Require(!Field<bool>(pane, "_planMakerStartupHold"), "The PlanMaker kept ignoring keys after its interview started.");
         int questionSelections = selections();
         Require(!planning.IsCompleted && transport.MessageIds.Distinct().Count() == 2 && attaches() == oldAttaches + 1,
             "Early model stop did not continue in one owned session with a fresh request ID.");

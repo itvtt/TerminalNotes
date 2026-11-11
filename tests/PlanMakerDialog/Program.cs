@@ -1097,6 +1097,8 @@ namespace TerminalNotes
         }
         internal void SetAutoResumeEnabled(bool value) { }
         internal void EnableResourceAdmissionRunOnce() => ResourceRunOnceEnabled = true;
+        internal Action? StartupHoldNotice { get; private set; }
+        internal void HoldInputUntilPlanningStarts(Action notice) => StartupHoldNotice = notice;
         internal Task WaitForResourceAdmissionAsync(CancellationToken token) => Task.CompletedTask;
         internal static Func<Task>? ReadyOverride;
         internal Task EnsureReadyAsync(CancellationToken token) => ReadyOverride?.Invoke() ?? Task.CompletedTask;

@@ -482,6 +482,7 @@ public sealed partial class TerminalPane : Grid, IDisposable
         }
         else Children.Add(_browser);
         Children.Add(_notice);
+        InitializeServerStatus();
         ApplyActivityVisuals();
         // Native console output must not wait behind an indefinitely non-idle window message queue.
         // Each tick posts one output batch, with acknowledgement backpressure.
@@ -1001,6 +1002,7 @@ public sealed partial class TerminalPane : Grid, IDisposable
         try
         {
             if (IsUserInputBlocked) return;
+            if (IgnoredBeforePlanning("paste", isProgrammatic: false, sendId: null)) return;
             if (!Clipboard.ContainsText()) return;
             string paste = Clipboard.GetText();
             if (paste.Length > 200_000)
@@ -1185,6 +1187,120 @@ public sealed partial class TerminalPane : Grid, IDisposable
         return title.Length <= 256 ? title : title[..256];
     }
 
+    // ── Server status per terminal (2026-11-11 사용자: "서버문제인지 프로그램 문제인지 중간에 터미널창에서 아예 입력이 안되는 경우도
+    // 많은데 서버의 상태를 터미널마다 표시할수있나"). Every OpenCode terminal has a dot in its top-right corner: green when its server
+    // answers and input is open (the tooltip has the response time and states); otherwise the dot grows into a short label with the
+    // reason: 서버 꺼짐, 서버 응답 없음, 화면 연결 끊김, 입력 막힘, 연결 중, 준비 중, 서버 느림. The server is asked every 5 seconds
+    // (GET /session/status, 4 s limit) through this terminal's own connection; local states are read every second.
+    private Border? _serverStatusChip;
+    private TextBlock? _serverStatusText;
+    private global::System.Windows.Shapes.Ellipse? _serverStatusDot;
+    private DispatcherTimer? _serverStatusTimer;
+    private int _serverStatusTicks;
+    private bool _serverProbeRunning;
+    private int _serverProbeFailures;
+    private double? _serverLatencyMs;
+    private DateTimeOffset? _serverLastAnswer;
+    private static readonly Brush ServerOkBrush = Frozen(Color.FromRgb(0x3D, 0xD6, 0x8C));
+    private static readonly Brush ServerWarnBrush = Frozen(Color.FromRgb(0xF0, 0xC8, 0x6E));
+    private static readonly Brush ServerDownBrush = Frozen(Color.FromRgb(0xFF, 0x8A, 0x80));
+
+    /// <summary>The label the corner shows (empty while healthy), for tests and accessibility</summary>
+    internal string ServerStatusLabel => _serverStatusText?.Text ?? "";
+
+    private static Brush Frozen(Color color)
+    {
+        var brush = new SolidColorBrush(color);
+        brush.Freeze();
+        return brush;
+    }
+
+    private void InitializeServerStatus()
+    {
+        if (!_usesNativeOpenCodeStatus || _serverStatusChip is not null) return;
+        _serverStatusDot = new global::System.Windows.Shapes.Ellipse { Width = 8, Height = 8, VerticalAlignment = VerticalAlignment.Center };
+        _serverStatusText = new TextBlock { FontSize = 11.5, Margin = new Thickness(6, 0, 1, 0), VerticalAlignment = VerticalAlignment.Center, Visibility = Visibility.Collapsed };
+        var row = new StackPanel { Orientation = Orientation.Horizontal };
+        row.Children.Add(_serverStatusDot);
+        row.Children.Add(_serverStatusText);
+        _serverStatusChip = new Border
+        {
+            Child = row, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(0, 4, 8, 0), Padding = new Thickness(5, 3, 5, 3), CornerRadius = new CornerRadius(9),
+            Background = Frozen(Color.FromArgb(0xD8, 0x14, 0x14, 0x14)), Cursor = global::System.Windows.Input.Cursors.Help
+        };
+        System.Windows.Automation.AutomationProperties.SetAutomationId(_serverStatusChip, "TerminalServerStatus");
+        Panel.SetZIndex(_serverStatusChip, 50);
+        Children.Add(_serverStatusChip);
+        _serverStatusTimer = new DispatcherTimer(TimeSpan.FromSeconds(1), DispatcherPriority.Background, async (_, _) =>
+        {
+            if (_serverStatusTicks++ % 5 == 0) await ProbeServerAsync();
+            else UpdateServerStatus();
+        }, Dispatcher);
+        _serverStatusTimer.Start();
+        UpdateServerStatus();
+    }
+
+    private async Task ProbeServerAsync()
+    {
+        if (_disposed || _serverProbeRunning || !IsVisible || _headlessOpenCodeClient is not { } client || _headlessOpenCodeHost?.IsRunning != true)
+        {
+            UpdateServerStatus();
+            return;
+        }
+        _serverProbeRunning = true;
+        try
+        {
+            using var limit = CancellationTokenSource.CreateLinkedTokenSource(HeadlessLifetimeCancellation);
+            limit.CancelAfter(TimeSpan.FromSeconds(4));
+            var watch = global::System.Diagnostics.Stopwatch.StartNew();
+            await client.ReadStatusAsync(limit.Token);
+            _serverLatencyMs = watch.Elapsed.TotalMilliseconds;
+            _serverProbeFailures = 0;
+            _serverLastAnswer = DateTimeOffset.Now;
+        }
+        catch (Exception exception) when (exception is OperationCanceledException or global::System.Net.Http.HttpRequestException or IOException or
+            InvalidDataException or ObjectDisposedException or JsonException or InvalidOperationException)
+        {
+            if (!_disposed) _serverProbeFailures++;
+        }
+        finally { _serverProbeRunning = false; }
+        UpdateServerStatus();
+    }
+
+    private void UpdateServerStatus()
+    {
+        if (_serverStatusChip is null || _serverStatusText is null || _serverStatusDot is null || _disposed) return;
+        bool serverUp = _headlessOpenCodeHost?.IsRunning == true;
+        bool screenLost = _usesNativeOpenCodeTui && (HasTuiConnectionFailure || serverUp && IsReady && !_session.IsRunning);
+        (string? label, Brush brush) = _failed ? ("터미널 오류", ServerDownBrush)
+            : !serverUp && _headlessOpenCodeClient is not null ? ("서버 꺼짐", ServerDownBrush)
+            : _serverProbeFailures >= 2 ? ("서버 응답 없음", ServerDownBrush)
+            : screenLost ? ("화면 연결 끊김", ServerDownBrush)
+            : _planMakerStartupHold ? ("연결 중 · 첫 질문 뒤 입력", ServerWarnBrush)
+            : IsUserInputBlocked ? ("입력 막힘 · 응답 처리 중", ServerWarnBrush)
+            : !IsReady || !serverUp ? ("준비 중", ServerWarnBrush)
+            : _serverLatencyMs is > 2000 and var slow ? ($"서버 느림 {slow / 1000:0.0}초", ServerWarnBrush)
+            : ((string?)null, ServerOkBrush);
+        _serverStatusDot.Fill = brush;
+        _serverStatusText.Text = label ?? "";
+        _serverStatusText.Foreground = brush;
+        _serverStatusText.Visibility = label is null ? Visibility.Collapsed : Visibility.Visible;
+        string server = !serverUp ? (_headlessOpenCodeClient is null ? "시작 전" : "꺼짐")
+            : _serverProbeFailures > 0 ? $"응답 없음 (연속 {_serverProbeFailures}번)"
+            : _serverLatencyMs is { } latency ? $"정상 · 응답 {latency:0}ms" + (_serverLastAnswer is { } at ? $" ({at:HH:mm:ss})" : "") : "확인 중";
+        string work = NativeOpenCodeStatus switch
+        {
+            OpenCodeStatusKind.Idle => "대기", OpenCodeStatusKind.Busy => "작업 중", OpenCodeStatusKind.NeedsInput => "답변·승인 대기",
+            OpenCodeStatusKind.Pending => "전달 중", _ => "확인 중"
+        };
+        string input = label is "입력 막힘 · 응답 처리 중" or "연결 중 · 첫 질문 뒤 입력" or "준비 중" ? label
+            : screenLost || label is "서버 꺼짐" or "서버 응답 없음" or "터미널 오류" ? "안 됨" : "가능";
+        string tip = $"OpenCode 서버: {server}\n작업: {work}\n" + (_usesNativeOpenCodeTui ? $"화면: {(screenLost ? "끊김" : "연결됨")}\n" : "") + $"입력: {input}";
+        _serverStatusChip.ToolTip = tip;
+        System.Windows.Automation.AutomationProperties.SetName(_serverStatusChip, "서버 상태 · " + (label ?? "정상") + " · " + tip.Replace('\n', ' '));
+    }
+
     public void Dispose()
     {
         if (_disposed) return;
@@ -1195,7 +1311,7 @@ public sealed partial class TerminalPane : Grid, IDisposable
         _workFailed = false;
         CancelNativeAutomation();
         IsUserInputBlocked = true;
-        _disposed = true; _flushTimer.Stop(); _activityTimer.Stop(); _nativeRefreshTimer?.Stop(); _nativeActivityRefreshTimer?.Stop();
+        _disposed = true; _flushTimer.Stop(); _activityTimer.Stop(); _nativeRefreshTimer?.Stop(); _nativeActivityRefreshTimer?.Stop(); _serverStatusTimer?.Stop();
         BeginSessionClose("pane_disposed");
         _autoResume?.Dispose();
         _openCodeStatus?.Dispose();
@@ -3164,6 +3280,8 @@ public sealed partial class TerminalPane
                     throw new OperationCanceledException("The planning session or its input ownership changed before submission.", token);
                 reportPhase("◌ 플랜 만들기 · OpenCode 질문 준비 중");
                 await client.SendPlanMakerAsync(planningSession, prompt, planningMessage, token, planningModel);
+                // The interview has started in this conversation: what the user types from now on belongs to it.
+                _planMakerStartupHold = false;
             }
             finally { _nativeOperationGate.Release(); }
             await RefreshNativeStateAsync();
@@ -3668,6 +3786,7 @@ public sealed partial class TerminalPane
         }
         finally
         {
+            _planMakerStartupHold = false;
             interview?.SetAwaitingContinuation(false);
             interview?.SetCanRequestFinish(true);
             _autoResume?.Suspend("플랜 만들기 종료 · 실행은 사용자 요청 대기");
@@ -4402,8 +4521,39 @@ public sealed partial class TerminalPane
         ReportUserWarning("터미널 입력: " + exception.Message);
     }
 
+    // A PlanMaker's own terminal takes no keys until its interview has started (HoldInputUntilPlanningStarts).
+    private volatile bool _planMakerStartupHold;
+    private Action? _planMakerStartupHoldNotice;
+    private long _planMakerStartupHoldNoticeAt;
+
+    /// <summary>
+    /// Until its first planning request is sent, a PlanMaker's terminal ignores typed keys: there is nothing to answer yet, and keys
+    /// typed while it connects would land in another conversation or stop the PlanMaker (2026-11-11 사용자: "고쳐 문제가 있으면
+    /// 고쳐야지"). <paramref name="notice"/> runs, at most once a second, when keys were ignored. Released once the interview starts
+    /// or the attempt ends.
+    /// </summary>
+    internal void HoldInputUntilPlanningStarts(Action notice)
+    {
+        _planMakerStartupHoldNotice = notice;
+        _planMakerStartupHold = true;
+    }
+
+    private bool IgnoredBeforePlanning(string input, bool isProgrammatic, long? sendId)
+    {
+        if (!_planMakerStartupHold || isProgrammatic || sendId is not null || TerminalInputCapture.IsTerminalResponse(input)) return false;
+        if (IsMouseReport(input)) return true;
+        long now = Environment.TickCount64;
+        if (now - _planMakerStartupHoldNoticeAt > 1000)
+        {
+            _planMakerStartupHoldNoticeAt = now;
+            _planMakerStartupHoldNotice?.Invoke();
+        }
+        return true;
+    }
+
     private Exception? HandleNativeSurfaceInput(string input, bool isProgrammatic, long? sendId)
     {
+        if (IgnoredBeforePlanning(input, isProgrammatic, sendId)) return null;
         if (!_disposed && !_failed && !_ready && CanHoldStartupInput(input, isProgrammatic, sendId))
         {
             // Typed while the terminal is still starting or reconnecting its view: keep it, in order,
