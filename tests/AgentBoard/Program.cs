@@ -19,7 +19,7 @@ internal static class Program
     private static int Main()
     {
         RenderOptions.ProcessRenderMode = System.Windows.Interop.RenderMode.SoftwareOnly;
-        var app = new Application();
+        var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
         app.Startup += async (_, _) =>
         {
             try { await RunAsync(); }
@@ -68,7 +68,7 @@ internal static class Program
         Assert(MainWindow.Observe(watch, State.Blocked, t.AddSeconds(90), false) == Notice.None, "...once");
         Assert(MainWindow.Observe(watch, State.Working, t.AddSeconds(91), true) == Notice.None, "a task terminal works");
         Assert(MainWindow.Observe(watch, State.Done, t.AddSeconds(92), true) == Notice.None, "and finishes");
-        Assert(MainWindow.Observe(watch, State.Done, t.AddSeconds(99), true) == Notice.None, "a task's finish is told by the task notifications");
+        Assert(MainWindow.Observe(watch, State.Done, t.AddSeconds(99), true) == Notice.FinishedQuietly, "a task's finish is told by the task notifications (but still learned from)");
 
         // On the window.
         string fixture = Path.Combine(Path.GetTempPath(), "TerminalNotes agent board " + Guid.NewGuid().ToString("N"));

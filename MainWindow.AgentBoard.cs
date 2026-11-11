@@ -19,7 +19,7 @@ public partial class MainWindow
 {
     internal enum AgentState { Blocked, Working, Done, Waiting, Ended }
 
-    internal enum AgentNotice { None, Blocked, Done }
+    internal enum AgentNotice { None, Blocked, Done, FinishedQuietly }
 
     internal sealed class AgentWatch
     {
@@ -53,7 +53,7 @@ public partial class MainWindow
         if (current == AgentState.Blocked) return AgentNotice.Blocked;
         if (current != AgentState.Done || !watch.WasWorking) return AgentNotice.None;
         watch.WasWorking = false;
-        return taskOwned ? AgentNotice.None : AgentNotice.Done;
+        return taskOwned ? AgentNotice.FinishedQuietly : AgentNotice.Done;
     }
 
     private static readonly TimeSpan AgentStateHold = TimeSpan.FromSeconds(3);
@@ -145,7 +145,11 @@ public partial class MainWindow
             switch (Observe(watch, current, now, taskOwned))
             {
                 case AgentNotice.Blocked: NotifyAgent(tab, "확인 필요", state.Pane.ActivityLabel); break;
-                case AgentNotice.Done: NotifyAgent(tab, "작업 완료", "작업을 마쳤습니다."); break;
+                case AgentNotice.Done:
+                    NotifyAgent(tab, "작업 완료", "작업을 마쳤습니다.");
+                    LearnFrom(state.Pane);
+                    break;
+                case AgentNotice.FinishedQuietly: LearnFrom(state.Pane); break;
             }
         }
         _agentBoardSummary.Inlines.Clear();

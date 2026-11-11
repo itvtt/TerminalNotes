@@ -648,7 +648,7 @@ internal static class InstalledSkills
 /// opened from a task, for that task alone (its own .opencode\skills). A search box and category tabs narrow the cards, a star
 /// keeps a skill at the top, and the rest (its content, versions, my own instructions, a new version of my own skill, deleting
 /// for the store's keepers) is in the card's ⋯ menu, which a right click also opens.</summary>
-internal sealed class SkillStoreDialog : Window
+internal sealed partial class SkillStoreDialog : Window
 {
     private const string NoStore = "이 빌드에는 스토어 주소가 없습니다(.env의 RELAY_HOST).";
     private readonly SkillStoreClient? _store;
@@ -831,7 +831,7 @@ internal sealed class SkillStoreDialog : Window
     private void RenderCategories()
     {
         var names = CategoryNames();
-        if (_category.Length > 0 && _category != AppliedCategory && !names.Contains(_category, StringComparer.OrdinalIgnoreCase)) _category = "";
+        if (_category.Length > 0 && _category != AppliedCategory && _category != MySkills.Category && !names.Contains(_category, StringComparer.OrdinalIgnoreCase)) _category = "";
         _categories.Children.Clear();
         _categoryCounts.Clear();
         void Row(string shown)
@@ -857,6 +857,11 @@ internal sealed class SkillStoreDialog : Window
         line.SetResourceReference(Border.BackgroundProperty, "Line");
         _categories.Children.Add(line);
         foreach (string name in names) Row(name);
+        // 나만의 스킬 (learned or written here) apart from the store's.
+        var mine = new Border { Height = 1, Margin = new Thickness(10, 8, 10, 8) };
+        mine.SetResourceReference(Border.BackgroundProperty, "Line");
+        _categories.Children.Add(mine);
+        Row(MySkills.Category);
     }
 
     private void Render()
@@ -891,9 +896,15 @@ internal sealed class SkillStoreDialog : Window
         var missing = installed.Values.Where(entry => entry.FromStore && _skills.All(skill => skill.Name != entry.Name)).OrderBy(entry => entry.Name).ToList();
         foreach (var (shown, count) in _categoryCounts)
             count.Text = (shown == AllCategory ? _skills.Count
+                : shown == MySkills.Category ? MySkills.List().Count
                 : shown == AppliedCategory ? rows.Count(row => row.Applied) + missing.Count(entry => entry.Applied)
                 : _skills.Count(skill => string.Equals(skill.CategoryName, shown, StringComparison.OrdinalIgnoreCase))).ToString(System.Globalization.CultureInfo.InvariantCulture);
         string query = _search.Text.Trim();
+        if (_category == MySkills.Category)
+        {
+            RenderMine(query);
+            return;
+        }
         bool Matches(StoreSkill skill) =>
             query.Length == 0 || new[] { skill.Title, skill.Description, skill.Summary, skill.Author, skill.CategoryName, skill.Name, skill.Origin }
                 .Any(text => text?.Contains(query, StringComparison.CurrentCultureIgnoreCase) == true);

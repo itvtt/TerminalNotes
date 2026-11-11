@@ -60,6 +60,7 @@ internal static class Program
         AppContext.SetData("TerminalNotes.SkillFavoritesPath", favorites);
         // The OpenCode config a task gets (its instruction files) stays in the fixture too.
         AppContext.SetData("TerminalNotes.DataDirectory", Path.Combine(fixture, "data"));
+        AppContext.SetData("TerminalNotes.MySkillsDirectory", Path.Combine(fixture, "my-skills"));
         // This PC's account is not a store admin here, whatever .env made the admins (the admin part below picks one).
         SkillStoreAdmins.AccountOverride = () => "DOMAIN\\not-a-store-admin";
         await CheckOpenCodeConfigAsync(fixture);
@@ -465,7 +466,7 @@ internal static class Program
                 "A private skill was listed to another account, or lost its category: " + report);
             await dialog.RefreshAsync();
             // Skills shared without a category are 기타, the last tab.
-            Require(dialog.Categories.SequenceEqual(["전체", "사용 중", "보고서", "기타"]) &&
+            Require(dialog.Categories.SequenceEqual(["전체", "사용 중", "보고서", "기타", "나만의 스킬"]) &&
                 Descendants(Card(dialog, report.Name)!).OfType<TextBlock>().Any(mark => mark.Text == StoreLook.LockGlyph),
                 "The category tabs, or the lock of a private skill: " + string.Join(", ", dialog.Categories));
             // 출처: a user id is only shown, a link opens, and only http(s) ever does: anyone writes it and a click starts it.

@@ -14873,6 +14873,7 @@ public partial class MainWindow : Window
         StartSystemMeter();
         StartAutomaticProblemReports();
         InitializeAgentBoard();
+        StartMySkills();
         ContentRendered += (_, _) => _ = CheckForUpdatesAtStartupAsync();
         ContentRendered += (_, _) => _ = TakeOutWithdrawnSkillsAtStartAsync();
         _settings = ReadSettings();
