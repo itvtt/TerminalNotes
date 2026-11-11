@@ -10252,6 +10252,7 @@ public sealed class OpenCodeHeadlessHost : IDisposable
     private OwnedWindowsProcess? _ownedProcess;
     private bool _starting;
     private bool _disposed;
+    private int? _adopt;
 
     public OpenCodeHeadlessHost(Uri endpoint)
     {
@@ -10268,6 +10269,35 @@ public sealed class OpenCodeHeadlessHost : IDisposable
     public uint? ProcessId => _process is { HasExited: false } process ? unchecked((uint)process.Id) : null;
     public int? ExitCode => _process is { HasExited: true } process ? process.ExitCode : null;
     public event Action<int>? Exited;
+
+    /// <summary>The next start takes this running server (kept after the app closed, see KeptServers) instead of launching one.</summary>
+    internal void AdoptOnStart(int processId) => _adopt = processId;
+
+    /// <summary>Lets the running server outlive the app: no longer stopped with the app or by <see cref="Dispose"/>. Its process id,
+    /// or null when there is none the app launched.</summary>
+    internal int? Detach()
+    {
+        OwnedWindowsProcess? owner;
+        Process? process;
+        lock (_gate)
+        {
+            owner = _ownedProcess;
+            process = _process;
+            if (process is not { HasExited: false }) return null;
+            _process = null;
+            _ownedProcess = null;
+        }
+        if (owner is null)
+        {
+            // A server taken back from an earlier run is in no job of this app: it is only let go.
+            process.Exited -= OnProcessExited;
+            int id = process.Id;
+            process.Dispose();
+            return id;
+        }
+        try { return owner.Release(); }
+        catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception) { return null; }
+    }
 
     public Task StartAsync(string directory, string? configContent, CancellationToken cancellationToken = default) =>
         StartAsync(directory, configContent, autoMode: false, cancellationToken: cancellationToken);
@@ -10301,13 +10331,27 @@ public sealed class OpenCodeHeadlessHost : IDisposable
             if (autoMode)
                 effectiveConfig = MergeAutoPermission(configContent ?? Environment.GetEnvironmentVariable("OPENCODE_CONFIG_CONTENT"));
 
-            AutoInstallDetectionResult command = AutoInstall.RequireNative(
-                await new OpenCodeInstallationService().CheckAsync(cancellationToken).ConfigureAwait(false));
-            if (!command.IsInstalled || string.IsNullOrWhiteSpace(command.Path))
-                throw new InvalidOperationException("OpenCode를 시작할 수 없습니다 · " + command.Message);
-            ProcessStartInfo startInfo = CreateStartInfo(command.Path, workingDirectory, port, effectiveConfig);
-            owner = OwnedWindowsProcess.Start(startInfo, exited: OnProcessExited);
-            process = owner.Process;
+            int? adoptId = _adopt;
+            _adopt = null;
+            if (adoptId is int adopted)
+            {
+                // The kept server: watched like one the app launched; stopped like one when the terminal closes.
+                process = Process.GetProcessById(adopted);
+                process.EnableRaisingEvents = true;
+                process.Exited += OnProcessExited;
+                if (process.HasExited) throw new InvalidOperationException("The kept OpenCode server already exited.");
+            }
+            else
+            {
+                AutoInstallDetectionResult command = AutoInstall.RequireNative(
+                    await new OpenCodeInstallationService().CheckAsync(cancellationToken).ConfigureAwait(false));
+                if (!command.IsInstalled || string.IsNullOrWhiteSpace(command.Path))
+                    throw new InvalidOperationException("OpenCode를 시작할 수 없습니다 · " + command.Message);
+                ProcessStartInfo startInfo = CreateStartInfo(command.Path, workingDirectory, port, effectiveConfig);
+                // Its output is not read: NUL, so a server kept after the app closes never writes into a closed pipe.
+                owner = OwnedWindowsProcess.Start(startInfo, exited: OnProcessExited, quietOutput: true);
+                process = owner.Process;
+            }
 
             lock (_gate)
             {
@@ -15198,7 +15242,9 @@ internal sealed class OwnedWindowsProcess : IDisposable
         Process.EnableRaisingEvents = true;
     }
 
-    internal static OwnedWindowsProcess Start(ProcessStartInfo info, Action<string>? receiveOutput = null, EventHandler? exited = null)
+    /// <param name="quietOutput">The command's output goes to NUL instead of a pipe the app reads: a server that may outlive the app
+    /// (<see cref="Release"/>) then never writes into a closed pipe.</param>
+    internal static OwnedWindowsProcess Start(ProcessStartInfo info, Action<string>? receiveOutput = null, EventHandler? exited = null, bool quietOutput = false)
     {
         if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
         if (info.UseShellExecute) throw new ArgumentException("Owned commands cannot use shell execution.", nameof(info));
@@ -15216,8 +15262,10 @@ internal sealed class OwnedWindowsProcess : IDisposable
             using (errorRead)
             using (errorWrite)
             using (SafeFileHandle input = CreateFileW("NUL", 0x80000000, 3, ref attributes, 3, 0, IntPtr.Zero))
+            using (SafeFileHandle? quiet = quietOutput ? CreateFileW("NUL", 0x40000000, 3, ref attributes, 3, 0, IntPtr.Zero) : null)
             {
-                if (input.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+                if (input.IsInvalid || quiet is { IsInvalid: true }) throw new Win32Exception(Marshal.GetLastWin32Error());
+                IntPtr standardOutput = (quiet ?? outputWrite).DangerousGetHandle(), standardError = (quiet ?? errorWrite).DangerousGetHandle();
                 Check(SetHandleInformation(errorRead, 1, 0));
                 IntPtr size = IntPtr.Zero;
                 InitializeProcThreadAttributeList(IntPtr.Zero, 2, 0, ref size);
@@ -15235,9 +15283,10 @@ internal sealed class OwnedWindowsProcess : IDisposable
                     Check(InitializeProcThreadAttributeList(list, 2, 0, ref size));
                     initialized = true;
                     Marshal.WriteIntPtr(inherited, 0, input.DangerousGetHandle());
-                    Marshal.WriteIntPtr(inherited, IntPtr.Size, outputWrite.DangerousGetHandle());
-                    Marshal.WriteIntPtr(inherited, IntPtr.Size * 2, errorWrite.DangerousGetHandle());
-                    Check(UpdateProcThreadAttribute(list, 0, (IntPtr)0x20002, inherited, (IntPtr)(IntPtr.Size * 3), IntPtr.Zero, IntPtr.Zero));
+                    Marshal.WriteIntPtr(inherited, IntPtr.Size, standardOutput);
+                    Marshal.WriteIntPtr(inherited, IntPtr.Size * 2, standardError);
+                    // With quiet output both are the one NUL handle: it is listed once.
+                    Check(UpdateProcThreadAttribute(list, 0, (IntPtr)0x20002, inherited, (IntPtr)(IntPtr.Size * (quiet is null ? 3 : 2)), IntPtr.Zero, IntPtr.Zero));
                     // JOB_LIST assigns atomically during CreateProcess, covering an
                     // abrupt owner exit even before our next managed instruction. The
                     // tasks' memory budget comes first so the launch's own job nests in it.
@@ -15250,8 +15299,8 @@ internal sealed class OwnedWindowsProcess : IDisposable
                         Startup = new StartupInfo
                         {
                             Size = Marshal.SizeOf<StartupInfoEx>(), Flags = 0x100 | 1,
-                            StandardInput = input.DangerousGetHandle(), StandardOutput = outputWrite.DangerousGetHandle(),
-                            StandardError = errorWrite.DangerousGetHandle()
+                            StandardInput = input.DangerousGetHandle(), StandardOutput = standardOutput,
+                            StandardError = standardError
                         },
                         AttributeList = list
                     };
@@ -15330,6 +15379,25 @@ internal sealed class OwnedWindowsProcess : IDisposable
             throw new TimeoutException("The owned command did not finish stopping within the cleanup timeout.");
         }
         finally { _job.Dispose(); }
+    }
+
+    /// <summary>Lets the command outlive the app (2026-11-11 사용자: herdr처럼 "앱 꺼도 계속 실행"): its job no longer kills it when
+    /// the app closes, and the app lets go of it without stopping it. Returns its process id.</summary>
+    internal int Release()
+    {
+        lock (_gate)
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0 || _stop is not null) throw new InvalidOperationException("The command already stopped.");
+            var limits = new JobExtendedLimit { Basic = new JobBasicLimit { LimitFlags = 0 } };
+            Check(SetInformationJobObject(_job, 9, ref limits, Marshal.SizeOf<JobExtendedLimit>()));
+            Process.Exited -= OnExited;
+            int id = Process.Id;
+            _job.Dispose();
+            _output.Dispose();
+            _error.Dispose();
+            Process.Dispose();
+            return id;
+        }
     }
 
     private void OnExited(object? sender, EventArgs args) => _ = StopAfterExitAsync();
@@ -18190,6 +18258,20 @@ internal static class TaskMemoryGuard
     }
 
     /// <summary>Names the task a nested job belongs to (its folder), for the notice when one of its programs is refused memory.</summary>
+    /// <summary>Servers kept running after the app closes leave the budget: its limits were set for this app's moment and nobody
+    /// adjusts them once the app is gone.</summary>
+    internal static void Unlimit()
+    {
+        lock (Gate)
+        {
+            if (!_available || _job == IntPtr.Zero) return;
+            _timer?.Dispose();
+            _timer = null;
+            var limits = new ExtendedLimit { Basic = new BasicLimit { LimitFlags = 0 } };
+            SetInformationJobObject(_job, 9, ref limits, Marshal.SizeOf<ExtendedLimit>());
+        }
+    }
+
     internal static void Register(SafeHandle job, string? directory)
     {
         if (!Enabled) return;

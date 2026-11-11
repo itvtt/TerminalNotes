@@ -83,10 +83,21 @@ public partial class MainWindow
         AutomationProperties.SetName(_agentBoardButton, "에이전트 현황");
         AutomationProperties.SetAutomationId(_agentBoardButton, "AgentBoardButton");
         _agentBoardRows = new StackPanel();
+        // Under the list: whether working agents go on after the app closes (KeptServers).
+        var keep = new CheckBox { Content = "앱을 닫아도 작업 중인 에이전트는 계속 실행", Margin = new Thickness(8, 8, 8, 4), FontSize = 12.5,
+            ToolTip = "닫을 때 작업 중이거나 답을 기다리는 태스크 터미널의 OpenCode 서버를 남겨 두고, 다시 열면 그대로 이어 붙입니다.\n24시간 안에 다시 열지 않으면 다음 시작 때 멈춥니다." };
+        keep.SetResourceReference(Control.ForegroundProperty, "TextSecondary");
+        AutomationProperties.SetAutomationId(keep, "KeepAgentsRunning");
+        keep.Loaded += (_, _) => keep.IsChecked = KeptServers.Enabled;
+        keep.Click += (_, _) => KeptServers.Enabled = keep.IsChecked == true;
+        var content = new DockPanel();
+        DockPanel.SetDock(keep, Dock.Bottom);
+        content.Children.Add(keep);
+        content.Children.Add(new ScrollViewer { MaxHeight = 440, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = _agentBoardRows });
         var frame = new Border
         {
             Width = 380, Margin = new Thickness(0, 8, 0, 0), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(8), Padding = new Thickness(8),
-            Child = new ScrollViewer { MaxHeight = 440, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = _agentBoardRows }
+            Child = content
         };
         frame.SetResourceReference(Border.BackgroundProperty, "PanelGradient");
         frame.SetResourceReference(Border.BorderBrushProperty, "MetalEdge");
@@ -105,6 +116,7 @@ public partial class MainWindow
         _agentBoardTimer = new DispatcherTimer(TimeSpan.FromSeconds(1), DispatcherPriority.Background, (_, _) => ObserveAgents(), Dispatcher);
         _agentBoardTimer.Start();
         Closed += (_, _) => _agentBoardTimer.Stop();
+        ContentRendered += (_, _) => ReconnectKeptAgents();
         ObserveAgents();
     }
 

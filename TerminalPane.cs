@@ -412,16 +412,29 @@ public sealed partial class TerminalPane : Grid, IDisposable
 
             try
             {
-                using var reservation = new TcpListener(IPAddress.Loopback, 0);
-                reservation.Start();
-                int port = ((IPEndPoint)reservation.LocalEndpoint).Port;
-                reservation.Stop();
+                // A task terminal opened again takes back the server its agent kept working on after the app closed.
+                var kept = useProjectContext && paneKey is { Length: > 0 } ? KeptServers.Take(workingDirectory, paneKey) : null;
+                int port;
+                if (kept is not null) port = kept.Port;
+                else
+                {
+                    using var reservation = new TcpListener(IPAddress.Loopback, 0);
+                    reservation.Start();
+                    port = ((IPEndPoint)reservation.LocalEndpoint).Port;
+                    reservation.Stop();
+                }
                 _effectiveStartupCommand = $"opencode --hostname 127.0.0.1 --port {port}" +
                     (startupCommand == "opencode --auto" ? " --auto" : "");
                 Uri nativeEndpoint = new($"http://127.0.0.1:{port}/");
                 NativeOpenCodeEndpoint = nativeEndpoint;
                 _openCodeStatus = new OpenCodeStatusMonitor(nativeEndpoint, workingDirectory);
                 InitializeHeadlessOpenCode(nativeEndpoint, paneKey);
+                if (kept is not null)
+                {
+                    _headlessOpenCodeHost!.AdoptOnStart(kept.ProcessId);
+                    _keptSessionId = kept.SessionId;
+                    _keptProcessId = kept.ProcessId;
+                }
                 if (useProjectContext) InitializeAutoResume(nativeEndpoint, planDocumentPath);
                 _openCodeSnapshot = _openCodeStatus.Snapshot;
                 _openCodeStatus.StatusChanged += _ => ScheduleNativeActivityRefresh();
@@ -1677,6 +1690,11 @@ public sealed partial class TerminalPane
             ReportLifecycleStage("native_server_start_requested");
             await host.StartAsync(WorkingDirectory, _openCodeConfigContent,
                 autoMode: StartupCommand == "opencode --auto", cancellationToken: HeadlessLifetimeCancellation);
+            if (_keptProcessId is int keptProcess)
+            {
+                KeptServers.Forget(keptProcess);
+                _keptProcessId = null;
+            }
             if (_disposed) { host.Dispose(); return; }
 
             _openCodeStatus?.Start();
@@ -1755,6 +1773,19 @@ public sealed partial class TerminalPane
                 throw new InvalidOperationException("대화 정리 복구 요청이 변경되었습니다.");
             BindNativeAutomationSession(recovery.SessionId);
             return recovery.SessionId;
+        }
+        if (Interlocked.Exchange(ref _keptSessionId, null) is { } keptSession)
+        {
+            // The session the kept server went on working in (it may have been another terminal number before).
+            try
+            {
+                _ = await client.GetSessionAsync(keptSession, cancellationToken);
+                BindNativeAutomationSession(keptSession);
+                try { await File.WriteAllTextAsync(NativeSessionMapPath(), JsonSerializer.Serialize(keptSession), cancellationToken); }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { }
+                return keptSession;
+            }
+            catch (Exception exception) when (exception is HttpRequestException or InvalidDataException or JsonException) { }
         }
         string? saved = null;
         string path = NativeSessionMapPath();

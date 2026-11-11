@@ -15754,6 +15754,7 @@ public partial class MainWindow : Window
         if (_resourcesDisposed) return;
         _resourcesDisposed = true;
         _closing = true;
+        KeepWorkingAgents();
         ClosePlanCleanupWindows();
         DisposeSkillReload();
         DisposeAnnouncements();
