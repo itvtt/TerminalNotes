@@ -121,6 +121,7 @@ internal static class MySkillLearning
         너는 나만의 스킬 정리 담당이다. 아래 스킬들을 하나의 스킬로 합쳐라. 도구는 쓰지 말고 아래 형식으로만 답한다.
         - 내용은 빠짐없이 합치되 겹치는 것은 한 번만 쓴다. 서로 다르면 더 최근의 것(뒤에 있는 것)을 따른다.
         - 결과는 처음부터 하나였던 것처럼 지침만 쓴다. 합친 과정, 스킬 번호, 원래 스킬들의 차이는 쓰지 않는다.
+        - 답의 첫 줄은 {{Start}}, 마지막 줄은 {{End}}로 반드시 감싼다.
         - 한국어로, 반드시 {{limit}}자 이내로, 단계·명령·확인 방법·주의점 중심으로 쓴다. 넘치면 예시와 설명부터 줄인다. 본문 첫 줄에 제목(# 제목)을 다시 쓰지 않는다.
         - 비밀번호, 토큰, 키, 개인 정보, 접속 주소는 쓰지 않는다.
 
@@ -152,11 +153,25 @@ internal static class MySkillLearning
     /// <summary>The skill in an answer; null when the answer says there is none or does not follow the format.</summary>
     internal static Lesson? ParseLesson(string answer)
     {
+        answer = answer.Replace("\r\n", "\n");
+        string block;
         int start = answer.LastIndexOf(Start, StringComparison.Ordinal);
-        if (start < 0) return null;
-        int end = answer.IndexOf(End, start, StringComparison.Ordinal);
-        if (end < 0) return null;
-        string block = answer[(start + Start.Length)..end].Replace("\r\n", "\n").Trim('\n');
+        if (start >= 0)
+        {
+            // A missing end marker (the answer cut short at the end) still has the whole skill above it.
+            int end = answer.IndexOf(End, start, StringComparison.Ordinal);
+            block = end < 0 ? answer[(start + Start.Length)..] : answer[(start + Start.Length)..end];
+        }
+        else
+        {
+            // Measured 2026-11-12: the model often answers in the field format without the markers. Taken only when the fields are
+            // there (a name or title line at a line start, then ---); "nothing to keep" stays nothing.
+            if (answer.Contains(None, StringComparison.Ordinal)) return null;
+            var first = Regex.Match(answer, @"(?m)^[ \t]*(name|title)[ \t]*:");
+            if (!first.Success) return null;
+            block = answer[first.Index..].Replace(End, "");
+        }
+        block = block.Trim('\n', ' ');
         int split = block.IndexOf("\n---", StringComparison.Ordinal);
         if (split < 0) return null;
         string head = block[..split], body = block[(split + 4)..].Trim();

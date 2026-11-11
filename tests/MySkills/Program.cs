@@ -195,6 +195,12 @@ internal static class Program
             """);
         Assert(lesson is { Name: "build-fix", Update: null, Title: "빌드 오류 고치기", Description: "빌드가 깨졌을 때", Body: "1. 오류 코드를 읽는다." }, "a lesson is read");
         Assert(MySkillLearning.ParseLesson($"{MySkillLearning.Start}\ntitle: x\n{MySkillLearning.End}") is null, "a lesson without a body is not taken");
+        // Real answers seen 2026-11-12: the fields without the markers, and the end marker missing.
+        var bare = MySkillLearning.ParseLesson("name: monthly-sales-summary\nupdate:\ntitle: 월별 매출 집계\ndescription: 매출 CSV를 월별로 집계할 때\n---\n1. CSV를 읽는다.");
+        Assert(bare is { Title: "월별 매출 집계", Body: "1. CSV를 읽는다." }, "an answer in the field format without the markers is taken");
+        Assert(MySkillLearning.ParseLesson($"{MySkillLearning.Start}\nname: a\ntitle: 제목\n---\n본문") is { Body: "본문" }, "an answer without its end marker is taken");
+        Assert(MySkillLearning.ParseLesson("이 작업은 다시 쓸 만한 절차가 없습니다.\n" + MySkillLearning.None) is null, "nothing to keep stays nothing");
+        Assert(MySkillLearning.ParseLesson("모델이 설명만 길게 했습니다. title이라는 단어도 있지만 형식은 아닙니다.") is null, "prose is not taken");
         var groups = MySkillLearning.ParseReview($"{MySkillLearning.MergeStart} my-a, my-b | 같은 일\n{MySkillLearning.MergeStart} my-c, my-unknown | x",
             new HashSet<string> { "my-a", "my-b", "my-c" });
         Assert(groups.Count == 1 && groups[0].Names.SequenceEqual(["my-a", "my-b"]) && groups[0].Reason == "같은 일", "review groups name known skills only");

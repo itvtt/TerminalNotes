@@ -69,12 +69,14 @@ internal static class ExternalAgents
         return result;
     }
 
-    /// <summary>Brings an agent's terminal window to the front.</summary>
-    internal static void Focus(IntPtr window)
+    /// <summary>Brings an agent's terminal window to the front (the user just clicked the board, so Windows lets the app do it);
+    /// whether it came forward. With nobody at the desktop (a disconnected remote session) no window can.</summary>
+    internal static bool Focus(IntPtr window)
     {
-        if (window == IntPtr.Zero) return;
+        if (window == IntPtr.Zero || !IsWindow(window)) return false;
         if (IsIconic(window)) ShowWindow(window, 9); // SW_RESTORE
         SetForegroundWindow(window);
+        return GetForegroundWindow() == window;
     }
 
     private static IEnumerable<int> Descendants(int id, ILookup<int, Entry> children)
@@ -188,6 +190,7 @@ internal static class ExternalAgents
     [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr window, int command);
     [DllImport("user32.dll")] private static extern bool IsIconic(IntPtr window);
     [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr window);
+    [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr window);
     [DllImport("user32.dll")] private static extern IntPtr GetAncestor(IntPtr window, uint flags);
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);

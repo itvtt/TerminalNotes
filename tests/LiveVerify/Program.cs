@@ -40,7 +40,12 @@ internal static class Program
             await host.StartAsync(project, null, autoMode: true);
             Log($"server {host.ProcessId} on {port}");
             using var client = new OpenCodeConversationClient(endpoint, project);
-            string? model = args.FirstOrDefault();
+            string? model = args.FirstOrDefault(arg => arg.Contains('/'));
+            if (args.Contains("merges"))
+            {
+                await MergesAsync(client);
+                return _failures;
+            }
 
             // 1. Real multi-step work.
             string work = await RunAsync(client, "월별 매출 보고서", """
@@ -118,6 +123,28 @@ internal static class Program
         }
         Console.WriteLine(_failures == 0 ? "PASS live verification" : $"FAIL live verification ({_failures})");
         return _failures;
+    }
+
+    // The curator's review and merge, again and again on the same three related skills (one long): how often it proposes.
+    private static async Task MergesAsync(OpenCodeConversationClient client)
+    {
+        string longBody = string.Join("\n", Enumerable.Range(1, 40).Select(i =>
+            $"{i}. 단계 {i}: Import-Csv로 읽은 행을 Group-Object로 묶고 Measure-Object -Sum으로 합계를 낸 뒤, 결과 표의 합과 전체 합이 같은지 확인한다. 열 이름이 다르면 먼저 헤더를 본다."));
+        MySkills.Save(null, "CSV 범주별 합계 보고서", "CSV를 범주별로 집계해 마크다운 보고서를 만들 때", longBody, learned: true);
+        MySkills.Save(null, "CSV 월별 합계 내기", "CSV에서 월별 합계를 낼 때", "1. Import-Csv로 읽는다.\n2. Group-Object month로 묶는다.\n3. Measure-Object -Sum으로 더한다.", learned: true);
+        MySkills.Save(null, "월별 매출 집계", "매출 CSV를 월별로 집계할 때", "- Import-Csv 후 month별 Group-Object\n- amount 합계는 Measure-Object -Sum\n- 결과를 표로 쓴다", learned: true);
+        int proposed = 0;
+        const int rounds = 4;
+        for (int round = 1; round <= rounds; round++)
+        {
+            MySkills.UpdateSettings(settings => settings with { Proposals = [] });
+            var review = await MainWindow.ReviewMySkillsAsync(client, "opencode/big-pickle", CancellationToken.None);
+            var proposals = MySkills.ReadSettings().Proposals;
+            Log($"round {round}: groups {review.Groups}, proposals {proposals.Count}, dropped [{string.Join("; ", review.Dropped)}]" +
+                string.Join("", proposals.Select(proposal => $"\n      {string.Join("+", proposal.Names)} → {proposal.Title} ({proposal.Body.Length}자)")));
+            if (proposals.Count > 0) proposed++;
+        }
+        Assert(proposed == rounds, $"the curator proposes the merge every time ({proposed}/{rounds})");
     }
 
     // Sends one prompt in a new session and waits until the agent is done.

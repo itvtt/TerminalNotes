@@ -1,4 +1,5 @@
 using System.IO;
+using System.Net.Http;
 using System.Text.Json;
 using TerminalNotes.Services;
 
@@ -77,7 +78,13 @@ public partial class MainWindow
         else saved = MySkills.Save(MySkills.NameFor(lesson.Name, lesson.Title), lesson.Title, lesson.Description, lesson.Body, learned: true, project: project);
         MySkills.UpdateSettings(current => current with { LearnedSinceReview = current.LearnedSinceReview + 1 });
         MySkills.Curate();
-        if (MySkills.ReviewDue()) await ReviewMySkillsAsync(client, model, token);
+        // The skill is learned whatever the review does: its failure must not hide that (the notification).
+        if (MySkills.ReviewDue())
+            try { await ReviewMySkillsAsync(client, model, token); }
+            catch (Exception exception) when (exception is IOException or InvalidDataException or HttpRequestException or JsonException)
+            {
+                System.Diagnostics.Trace.WriteLine("Skill review failed: " + exception.Message);
+            }
         return saved;
     }
 
@@ -88,8 +95,17 @@ public partial class MainWindow
     internal static async Task<Review> ReviewMySkillsAsync(OpenCodeConversationClient client, string? model, CancellationToken token)
     {
         var skills = MySkills.List();
-        string answer = await client.CompleteToolLessPromptAsync("Terminal Notes · 스킬 정리", MySkillLearning.ReviewPrompt(skills), model, token,
-            TimeSpan.FromMinutes(4), TimeSpan.FromMinutes(2));
+        string answer;
+        try
+        {
+            answer = await client.CompleteToolLessPromptAsync("Terminal Notes · 스킬 정리", MySkillLearning.ReviewPrompt(skills), model, token,
+                TimeSpan.FromMinutes(4), TimeSpan.FromMinutes(2));
+        }
+        catch (Exception exception) when (exception is IOException or InvalidDataException or HttpRequestException)
+        {
+            // Not reviewed (a slow or busy model, measured 2026-11-12): tried again after the next learned skill.
+            return new Review("", 0, ["검토하지 못함 · " + exception.Message]);
+        }
         var proposals = new List<MySkills.MergeProposal>();
         var dropped = new List<string>();
         var groups = MySkillLearning.ParseReview(answer, skills.Select(skill => skill.Name).ToHashSet(StringComparer.Ordinal));
@@ -118,8 +134,18 @@ public partial class MainWindow
     {
         foreach (int limit in new[] { 6000, 3500 })
         {
-            string merged = await client.CompleteToolLessPromptAsync("Terminal Notes · 스킬 합치기", MySkillLearning.MergePrompt(parts, limit), model, token,
-                TimeSpan.FromMinutes(6), TimeSpan.FromMinutes(2));
+            string merged;
+            try
+            {
+                merged = await client.CompleteToolLessPromptAsync("Terminal Notes · 스킬 합치기", MySkillLearning.MergePrompt(parts, limit), model, token,
+                    TimeSpan.FromMinutes(6), TimeSpan.FromMinutes(2));
+            }
+            catch (Exception exception) when (exception is IOException or InvalidDataException or HttpRequestException)
+            {
+                // A slow or failed answer loses this merge only, not the rest of the review.
+                problems?.Add(exception.Message);
+                return null;
+            }
             var lesson = MySkillLearning.ParseLesson(merged);
             if (lesson is not null && lesson.Body.Length <= MySkills.MaxBodyChars) return lesson;
             problems?.Add(lesson is null

@@ -153,6 +153,26 @@ internal static class Program
             Log("notices: " + string.Join(" | ", Notices));
             Assert(Learned.Count == 1, "and learned from once");
 
+            // ── 4b. 지난 대화 검색 from the window's button, through this terminal's server: the job's conversation is found and 이어가기
+            // opens that session.
+            second.WindowState = WindowState.Normal;
+            await Task.Delay(500);
+            (string Project, string Session)? resumed = null;
+            ConversationSearchWindow.ResumeOverride = (folder, session) => resumed = (folder, session);
+            Call(second, "OpenConversationSearch");
+            var search = Application.Current.Windows.OfType<ConversationSearchWindow>().Single();
+            await Task.Delay(500);
+            Descendants(search).OfType<TextBox>().First().Text = "done.txt";
+            await Until(() => Descendants(search).OfType<Border>().Any(border => System.Windows.Automation.AutomationProperties.GetAutomationId(border) == "ConversationHit"),
+                "the job's conversation is found in the search window", 60);
+            var hit = Descendants(search).OfType<Border>().First(border => System.Windows.Automation.AutomationProperties.GetAutomationId(border) == "ConversationHit");
+            Log("search: " + string.Join(" | ", Texts(hit).Take(3)));
+            Assert(Texts(hit).Any(text => text.Contains("report-task", StringComparison.Ordinal)), "the hit names its task");
+            Descendants(hit).OfType<Button>().First(button => button.Content as string == "이어가기").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert(resumed is { } chosen && chosen.Session == keptSession && string.Equals(Path.GetFullPath(chosen.Project), Path.GetFullPath(project), StringComparison.OrdinalIgnoreCase),
+                "이어가기 opens that very session in its task folder");
+            search.Close();
+
             // ── 5. Closing with the agent idle stops the server.
             Assert(second.ExitConfirmation().StartsWith("앱을 닫으면 열려 있는 모든 터미널", StringComparison.Ordinal), "with the agent idle, the exit question says everything ends");
             Call(second, "DisposeResources");
@@ -179,6 +199,16 @@ internal static class Program
         };
         window.Show();
         return window;
+    }
+
+    private static IEnumerable<DependencyObject> Descendants(DependencyObject root)
+    {
+        for (int i = 0; i < System.Windows.Media.VisualTreeHelper.GetChildrenCount(root); i++)
+        {
+            var child = System.Windows.Media.VisualTreeHelper.GetChild(root, i);
+            yield return child;
+            foreach (var inner in Descendants(child)) yield return inner;
+        }
     }
 
     private static IEnumerable<string> Texts(DependencyObject root)

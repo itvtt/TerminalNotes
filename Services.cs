@@ -10054,7 +10054,7 @@ public sealed partial class OpenCodeConversationClient
             }
         }
         catch (OperationCanceledException exception) when (!token.IsCancellationRequested && bounded.IsCancellationRequested && !stalled)
-        { throw new IOException($"플랜 정리가 최대 {timeout.TotalMinutes:0}분 안에 끝나지 않았습니다.", exception); }
+        { throw new IOException($"{(title.Contains("플랜", StringComparison.Ordinal) ? "플랜 정리가" : "모델 응답이")} 최대 {timeout.TotalMinutes:0}분 안에 끝나지 않았습니다.", exception); }
         finally
         {
             if (helper is not null)

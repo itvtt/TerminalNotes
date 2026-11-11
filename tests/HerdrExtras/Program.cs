@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Automation;
@@ -84,6 +84,9 @@ internal static class Program
     }
 
     [System.Runtime.InteropServices.DllImport("kernel32.dll")] private static extern bool FreeConsole();
+    [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+    [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern bool CloseDesktop(IntPtr desktop);
 
     private static bool Refused(ScheduledJobs.Job job)
     {
@@ -122,6 +125,45 @@ internal static class Program
         Console.WriteLine("agent processes now: " + string.Join(", ", running.Select(entry => $"{entry.Exe}:{entry.Id}<-{entry.Parent}")));
         Assert(running.Count == 0 || live.Count > 0, "agents running in terminals on this PC are found");
         Assert(live.All(agent => agent.Host != "explorer"), "Explorer is never named as the terminal");
+
+        // An agent typed in a new console window (a renamed ping.exe as codex.exe): found with its window, and 그 창으로 가기 brings it forward.
+        string bin = Path.Combine(Path.GetTempPath(), "TerminalNotes fake agent");
+        Directory.CreateDirectory(bin);
+        string fake = Path.Combine(bin, "codex.exe");
+        File.Copy(Path.Combine(Environment.SystemDirectory, "ping.exe"), fake, overwrite: true);
+        using var shell = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("cmd.exe", $"/k \"\"{fake}\" -n 120 127.0.0.1\"") { UseShellExecute = true })!;
+        try
+        {
+            ExternalAgents.Agent? codex = null;
+            for (int i = 0; i < 20 && codex is null; i++)
+            {
+                Thread.Sleep(500);
+                codex = ExternalAgents.Scan(new HashSet<int>()).FirstOrDefault(agent => agent.Name == "Codex");
+            }
+            Console.WriteLine($"fake agent: {codex?.Name} pid {codex?.ProcessId} in {codex?.Host} window {codex?.Window}");
+            Assert(codex is { Window: not 0 }, "an agent started in a new console window is found with its window");
+            if (codex is { Window: not 0 } agentFound)
+            {
+                // Only with someone at the desktop: a disconnected remote session has no input desktop and no foreground window.
+                IntPtr desktop = OpenInputDesktop(0, false, 0x0100);
+                if (desktop == IntPtr.Zero) Console.WriteLine("SKIP 그 창으로 가기: nobody at the desktop (disconnected session)");
+                else
+                {
+                    CloseDesktop(desktop);
+                    ExternalAgents.Focus(agentFound.Window);
+                    Thread.Sleep(700);
+                    IntPtr front = GetForegroundWindow();
+                    Console.WriteLine($"foreground after Focus: {front} (agent window {agentFound.Window})");
+                    Assert(front == agentFound.Window, "그 창으로 가기 brings the agent's terminal window to the front");
+                }
+            }
+        }
+        finally
+        {
+            foreach (var entry in ExternalAgents.Snapshot().Where(entry => entry.Exe.Equals("codex.exe", StringComparison.OrdinalIgnoreCase)))
+                try { System.Diagnostics.Process.GetProcessById(entry.Id).Kill(); } catch { }
+            try { shell.Kill(true); } catch { }
+        }
     }
 
     private static void Search()
