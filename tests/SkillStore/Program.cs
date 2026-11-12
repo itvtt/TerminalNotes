@@ -142,7 +142,7 @@ internal static class Program
             ToggleButton Switch(string name) => SwitchIn(dialog!, name);
             Button? Labeled(string name, string prefix) => Buttons(Card(dialog!, name)!).FirstOrDefault(button => (button.Content as string ?? "").StartsWith(prefix, StringComparison.Ordinal));
             List<string> MenuOf(string name) => Card(dialog!, name)!.ContextMenu.Items.OfType<MenuItem>().Select(item => (string)item.Header).ToList();
-            Require(Switch(Name).IsChecked == false && MenuOf(Name).SequenceEqual(["내용 보기"]),
+            Require(Switch(Name).IsChecked == false && MenuOf(Name).SequenceEqual(["자세히", "내용 보기"]),
                 "An unapplied skill was shown on, or its menu offered more than its content: " + string.Join(", ", MenuOf(Name)));
             Switch(Name).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
             await Until(() => InstalledSkills.List().TryGetValue(Name, out var entry) && entry is { FromStore: true, Applied: true, Version: 1 }, "the click to apply v1");
@@ -164,7 +164,7 @@ internal static class Program
             Require(listed.Count == 1 && listed[0] is { Version: 2, VersionCount: 2, Note: "Hive 금지" }, "The store did not show only the latest version.");
             await dialog.RefreshAsync();
             var update = Labeled(Name, "업데이트");
-            Require(update is not null && Switch(Name).IsChecked == true && MenuOf(Name).SequenceEqual(["내용 보기", "버전 기록", "내 지침"]),
+            Require(update is not null && Switch(Name).IsChecked == true && MenuOf(Name).SequenceEqual(["자세히", "내용 보기", "버전 기록", "내 지침"]),
                 "An applied skill with a newer store version did not offer it, or its menu: " + string.Join(", ", MenuOf(Name)));
             // The card's badge shows the latest version; the one this PC has is in its tooltip and 업데이트's.
             var badge = VersionBadgeIn(dialog, Name);
@@ -333,13 +333,37 @@ internal static class Program
                 "The file's own title line was not dropped, or the instructions are missing: " + trinoText);
             share.Close();
             await dialog.RefreshAsync();
-            // The card: the title, the first line of the instructions (the description only repeats the title), and at the bottom
-            // left the date and the author, and the version's badge right before the star.
-            var trinoCard = Descendants(Card(dialog, trino.Name)!).OfType<TextBlock>().ToList();
+            // The card is one line: the title and the version's badge (2026-11-12, "제목만 보여주고 디테일한건 클릭해야 보이게"). A click opens
+            // its details under it: the first line of the instructions (the description only repeats the title) and the date · author.
+            var trinoBorder = Card(dialog, trino.Name)!;
+            var trinoDetails = Descendants(trinoBorder).OfType<Popup>().Single();
+            var trinoRow = Descendants(trinoBorder).TakeWhile(node => node is not Popup).OfType<TextBlock>().ToList();
+            var trinoCard = Descendants(trinoDetails).OfType<TextBlock>().ToList();
             string byline = trino.ShownDate!.Value.ToLocalTime().ToString("yyyy-MM-dd") + " · " + user;
-            Require(trinoCard[0].Text == "Trino 가이드" && trinoCard.Count(line => line.Text == "Trino 가이드") == 1 &&
-                trinoCard.Any(line => line.Text == "Trino로 조회한다.") && trinoCard.Any(line => line.Text == byline),
-                "The card's title, description or date · author: " + string.Join(" | ", trinoCard.Select(line => line.Text)));
+            Require(trinoRow[0].Text == "Trino 가이드" && trinoRow.All(line => line.Text != "Trino로 조회한다." && line.Text != byline) &&
+                trinoBorder.ActualHeight < 70 && !trinoDetails.IsOpen,
+                "The card is not one line with the title alone: " + string.Join(" | ", trinoRow.Select(line => line.Text)) + $" ({trinoBorder.ActualHeight:0}px)");
+            Require(trinoCard.Any(line => line.Text == "Trino로 조회한다.") && trinoCard.Any(line => line.Text == byline),
+                "The details' description or date · author: " + string.Join(" | ", trinoCard.Select(line => line.Text)));
+            // A real click: MouseUp bubbles from the title and each element on the way raises its own MouseLeftButtonUp. Without a real
+            // mouse the popup would lose its capture and close at once (it closes on a click elsewhere), so it stays open for this check.
+            trinoDetails.StaysOpen = true;
+            await Task.Delay(300);  // the cards were just drawn again: their popups load with the next layout pass
+            trinoRow[0].RaiseEvent(new System.Windows.Input.MouseButtonEventArgs(System.Windows.Input.Mouse.PrimaryDevice, 0, System.Windows.Input.MouseButton.Left)
+                { RoutedEvent = UIElement.MouseUpEvent });
+            Require(trinoDetails.IsOpen, "A click on the card did not open its details.");
+            await SaveImage(dialog, "store-cards-compact.png");
+            if (trinoDetails.Child is FrameworkElement shownDetails)
+            {
+                shownDetails.UpdateLayout();
+                await Task.Delay(150);
+                var detailsBitmap = new System.Windows.Media.Imaging.RenderTargetBitmap(Math.Max(1, (int)Math.Ceiling(shownDetails.ActualWidth)),
+                    Math.Max(1, (int)Math.Ceiling(shownDetails.ActualHeight)), 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
+                detailsBitmap.Render(shownDetails);
+                Save(detailsBitmap, "store-card-details.png");
+            }
+            trinoDetails.StaysOpen = false;
+            trinoDetails.IsOpen = false;
             var trinoBadge = VersionBadgeIn(dialog, trino.Name);
             var trinoStar = Descendants(Card(dialog, trino.Name)!).OfType<ToggleButton>()
                 .Single(button => System.Windows.Automation.AutomationProperties.GetName(button).StartsWith("즐겨찾기", StringComparison.Ordinal));
@@ -409,7 +433,7 @@ internal static class Program
 
             // Only the one who shared it sees 수정 and 삭제 (store admins aside); 수정 opens the file window at the next version, and
             // a larger number can be written.
-            Require(MenuOf(trino.Name).SequenceEqual(["내용 보기", "수정", "비공개로 바꾸기", "삭제"]) && !MenuOf(Name).Contains("수정") && !MenuOf(Name).Contains("삭제") &&
+            Require(MenuOf(trino.Name).SequenceEqual(["자세히", "내용 보기", "수정", "비공개로 바꾸기", "삭제"]) && !MenuOf(Name).Contains("수정") && !MenuOf(Name).Contains("삭제") &&
                     !MenuOf(Name).Contains("비공개로 바꾸기"),
                 "수정 and 삭제 are not limited to the one who shared the skill: " + string.Join(", ", MenuOf(trino.Name)));
             var upload = new ShareSkillDialog(store, trino) { Owner = dialog };

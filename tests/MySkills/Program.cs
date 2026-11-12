@@ -279,7 +279,12 @@ internal static class Program
         var texts = Descendants(dialog).OfType<TextBlock>().Where(text => text.IsVisible).ToList();
         Assert(texts.Any(text => AutomationProperties.GetAutomationId(text) == "SkillPartHeading" && text.Text == "나만의 스킬 · 2"), "the view is headed with its count");
         Assert(texts.Any(text => AutomationProperties.GetAutomationId(text) == "MySkillUsage" && text.Text.StartsWith($"켜짐 2/{MySkills.MaxApplied}", StringComparison.Ordinal)), "the usage of the limits is shown");
-        Assert(texts.Any(text => text.Text == "자동") && texts.Any(text => text.Text.Contains("사용 1회", StringComparison.Ordinal)), "a learned skill is marked, uses are shown");
+        // The card is one line (자동 on it); how often it was used is in its details, opened by a click (2026-11-12).
+        Assert(texts.Any(text => text.Text == "자동") && !texts.Any(text => text.Text.Contains("사용 1회", StringComparison.Ordinal)) &&
+            Descendants(dialog).OfType<System.Windows.Controls.Primitives.Popup>().Where(popup => popup.Child is not null)
+                .SelectMany(popup => Descendants(popup.Child)).OfType<TextBlock>()
+                .Any(text => text.Text.Contains("사용 1회", StringComparison.Ordinal)),
+            "a learned skill is marked on its card, its uses are in its details");
         Assert(Descendants(dialog).OfType<Border>().Any(border => AutomationProperties.GetAutomationId(border) == "MySkillProposal"), "a merge proposal is shown");
         Assert(texts.Any(text => AutomationProperties.GetAutomationId(text) == "MySkillResting" && text.Text.StartsWith("사용 한도", StringComparison.Ordinal)),
             "resting at the usage limit is shown beside 자동으로 배우기");

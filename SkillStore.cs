@@ -953,35 +953,48 @@ internal sealed partial class SkillStoreDialog : Window
         _sections.Children.Add(grid);
     }
 
-    // A card: the title (a lock when only its author sees it, a link when it follows GitHub), the latest version's badge and the
-    // star; a short description and the 출처 when it has one; at the bottom left the date (made, or last changed) and the author in
-    // gold, at the right 업데이트 when the store has a newer version, ⋯ for everything else, and the switch. The whole card opens the
-    // same menu on a right click.
+    // A card is one line (2026-11-12 사용자: "카드별로 너무 설명이 많아 보인다고 해야하나? 제목만 보여주고 디테일한건 클릭해야 보이게"):
+    // the title with its marks (a lock when only its author sees it, a link when it follows GitHub, a dot when it has a notice, the
+    // latest version's badge), the star, 업데이트 when the store has a newer version, ⋯ for everything else, and the switch. A click on
+    // the card opens its details under it (the description, the 출처, the date and the author); a right click opens the ⋯ menu.
     private Border Card(string title, string description, string name, InstalledSkills.Entry? local, StoreSkill? skill, bool global, bool globalOff)
     {
         bool applied = local is { Applied: true } || global && !globalOff, own = local is { FromStore: false };
         string? notice = local is { FromStore: true, Notice.Length: > 0 } ? local.Notice : null;
         var layout = new Grid();
-        layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        layout.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        var head = new Grid();
-        head.ColumnDefinitions.Add(new ColumnDefinition());
-        head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        head.Children.Add(new TextBlock { Text = title, FontSize = 14.5, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap,
-            TextTrimming = TextTrimming.CharacterEllipsis, MaxHeight = 42, VerticalAlignment = VerticalAlignment.Center, ToolTip = name });
+        layout.ColumnDefinitions.Add(new ColumnDefinition());
+        layout.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        layout.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        layout.Children.Add(new TextBlock { Text = title, FontSize = 14, FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis,
+            VerticalAlignment = VerticalAlignment.Center, ToolTip = title });
         var marks = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(6, 0, 0, 0) };
+        if (notice is not null) marks.Children.Add(NoticeDot(notice));
         if (skill is { Private: true }) marks.Children.Add(Mark(StoreLook.LockGlyph, "비공개 · 나만 보고 쓰는 스킬"));
         if (skill is { Source.Length: > 0 } linked)
             marks.Children.Add(Mark(StoreLook.LinkGlyph, "깃허브 파일을 따라 자동 업데이트\n" + linked.Source + (linked.SourceError is { Length: > 0 } error ? "\n" + error : "")));
         if (skill is not null) marks.Children.Add(VersionBadge(skill, local));
         Grid.SetColumn(marks, 1);
-        head.Children.Add(marks);
+        layout.Children.Add(marks);
+
+        // What the card no longer shows: in the details, opened by a click.
+        var details = new StackPanel();
+        details.Children.Add(DetailTitle(title));
+        if (notice is not null) details.Children.Add(DetailText(notice, "Accent"));
+        if (description.Length > 0) details.Children.Add(DetailText(description, "TextSecondary"));
+        if (skill is { Origin.Length: > 0 }) details.Children.Add(OriginLine(skill));
+        string byline = string.Join(" · ", new[] { skill?.ShownDate?.ToLocalTime().ToString("yyyy-MM-dd"), skill?.Author }.Where(part => !string.IsNullOrEmpty(part)));
+        if (byline.Length > 0)
+        {
+            var meta = new TextBlock { Text = byline, FontSize = 11.5, Margin = new Thickness(0, 8, 0, 0), TextTrimming = TextTrimming.CharacterEllipsis,
+                ToolTip = skill!.Version > 1 ? "마지막 수정" : "처음 공유" };
+            meta.SetResourceReference(TextBlock.ForegroundProperty, "Accent");
+            details.Children.Add(meta);
+        }
+
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
         if (skill is not null)
         {
-            var star = new ToggleButton { IsChecked = _favorites.Contains(name), VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(4, -4, -6, 0) };
+            var star = new ToggleButton { IsChecked = _favorites.Contains(name), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(2, 0, 0, 0) };
             star.SetResourceReference(StyleProperty, "StoreStar");
             AutomationProperties.SetName(star, "즐겨찾기 · " + title);
             star.Click += (_, _) =>
@@ -989,37 +1002,8 @@ internal sealed partial class SkillStoreDialog : Window
                 SkillFavorites.Set(_favorites, name, star.IsChecked == true);
                 Render();
             };
-            Grid.SetColumn(star, 2);
-            head.Children.Add(star);
+            actions.Children.Add(star);
         }
-        layout.Children.Add(head);
-        if ((notice ?? description).Length > 0)
-        {
-            // The 출처 takes one of its three lines: cards in a row grow together, and all of them would for one 출처.
-            var detail = new TextBlock { Text = notice ?? description, FontSize = 13, LineHeight = 19, TextWrapping = TextWrapping.Wrap,
-                TextTrimming = TextTrimming.CharacterEllipsis, MaxHeight = skill is { Origin.Length: > 0 } ? 38 : 57, Margin = new Thickness(0, 8, 0, 0) };
-            detail.SetResourceReference(TextBlock.ForegroundProperty, notice is null ? "TextSecondary" : "Accent");
-            Grid.SetRow(detail, 1);
-            layout.Children.Add(detail);
-        }
-        if (skill is { Origin.Length: > 0 })
-        {
-            var origin = OriginLine(skill);
-            Grid.SetRow(origin, 2);
-            layout.Children.Add(origin);
-        }
-        var foot = new Grid { Margin = new Thickness(0, 10, -6, -4) };
-        foot.ColumnDefinitions.Add(new ColumnDefinition());
-        foot.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        string byline = string.Join(" · ", new[] { skill?.ShownDate?.ToLocalTime().ToString("yyyy-MM-dd"), skill?.Author }.Where(part => !string.IsNullOrEmpty(part)));
-        if (byline.Length > 0)
-        {
-            var meta = new TextBlock { Text = byline, FontSize = 11.5, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis,
-                ToolTip = skill!.Version > 1 ? "마지막 수정" : "처음 공유" };
-            meta.SetResourceReference(TextBlock.ForegroundProperty, "Accent");
-            foot.Children.Add(meta);
-        }
-        var actions = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
         if (!global && local is { FromStore: true, Applied: true, Mode: SkillMode.Store } && skill is not null && skill.Version > local.Version)
         {
             var update = new Button { Content = "업데이트", ToolTip = $"v{local.Version} → v{skill.Version}", VerticalAlignment = VerticalAlignment.Center };
@@ -1048,17 +1032,91 @@ internal sealed partial class SkillStoreDialog : Window
             else if (skill is not null) await ApplyAsync(skill, null);
         };
         actions.Children.Add(toggle);
-        Grid.SetColumn(actions, 1);
-        foot.Children.Add(actions);
-        Grid.SetRow(foot, 3);
-        layout.Children.Add(foot);
-        var card = new Border { Child = layout, Tag = name, CornerRadius = new CornerRadius(10), Padding = new Thickness(16, 14, 14, 10),
-            Margin = new Thickness(6), MinHeight = 136, BorderThickness = new Thickness(1), ContextMenu = menu };
+        Grid.SetColumn(actions, 2);
+        layout.Children.Add(actions);
+        var card = CompactCard(layout, name, menu);
+        AttachDetails(card, layout, details, menu);
+        return card;
+    }
+
+    // One line: the title on the left, the switch on the right (both kinds of card).
+    internal static Border CompactCard(Grid layout, string name, ContextMenu menu)
+    {
+        var card = new Border { Child = layout, Tag = name, CornerRadius = new CornerRadius(10), Padding = new Thickness(14, 6, 8, 6),
+            Margin = new Thickness(6, 4, 6, 4), MinHeight = 48, BorderThickness = new Thickness(1), ContextMenu = menu, Cursor = Cursors.Hand };
         card.SetResourceReference(Border.BackgroundProperty, "Surface");
         card.SetResourceReference(Border.BorderBrushProperty, "ButtonLine");
         card.MouseEnter += (_, _) => card.SetResourceReference(Border.BorderBrushProperty, "ButtonLineHover");
         card.MouseLeave += (_, _) => card.SetResourceReference(Border.BorderBrushProperty, "ButtonLine");
         return card;
+    }
+
+    /// <summary>
+    /// The card's details under it: opened by a click on the card (not on its buttons, which handle their own clicks) or 자세히 in its
+    /// menu, closed by a click anywhere else or Esc. They live in the card (a popup in its layout), so they keep the card's look.
+    /// </summary>
+    internal static Popup AttachDetails(Border card, Panel layout, FrameworkElement content, ContextMenu menu)
+    {
+        var panel = new Border { Child = content, CornerRadius = new CornerRadius(10), Padding = new Thickness(16, 12, 16, 14), BorderThickness = new Thickness(1),
+            MaxWidth = 520, Cursor = Cursors.Arrow };
+        panel.SetResourceReference(Border.BackgroundProperty, "Surface");
+        panel.SetResourceReference(Border.BorderBrushProperty, "ButtonLineHover");
+        AutomationProperties.SetAutomationId(panel, "SkillDetails");
+        var popup = new Popup { Child = panel, PlacementTarget = card, Placement = PlacementMode.Bottom, StaysOpen = false, AllowsTransparency = true,
+            VerticalOffset = 2 };
+        layout.Children.Add(popup);
+        // The click that closes it (outside, on this same card) must not open it again at once.
+        DateTime closedAt = DateTime.MinValue;
+        popup.Closed += (_, _) => closedAt = DateTime.UtcNow;
+        void Open()
+        {
+            panel.MinWidth = Math.Min(panel.MaxWidth, Math.Max(0, card.ActualWidth));
+            popup.IsOpen = true;
+        }
+        card.MouseLeftButtonUp += (_, e) =>
+        {
+            if (Within(e.OriginalSource as DependencyObject, panel) || DateTime.UtcNow - closedAt < TimeSpan.FromMilliseconds(300)) return;
+            Open();
+        };
+        panel.KeyDown += (_, e) => { if (e.Key == Key.Escape) popup.IsOpen = false; };
+        // First in the menu (삭제 stays last).
+        StoreLook.Item(menu, "자세히", Open);
+        object item = menu.Items[^1];
+        menu.Items.RemoveAt(menu.Items.Count - 1);
+        menu.Items.Insert(0, item);
+        return popup;
+    }
+
+    private static bool Within(DependencyObject? node, DependencyObject ancestor)
+    {
+        for (; node is not null; node = node is Media.Visual or Media.Media3D.Visual3D ? Media.VisualTreeHelper.GetParent(node) ?? LogicalTreeHelper.GetParent(node)
+                 : LogicalTreeHelper.GetParent(node))
+            if (ReferenceEquals(node, ancestor)) return true;
+        return false;
+    }
+
+    internal static TextBlock DetailTitle(string title)
+    {
+        var heading = new TextBlock { Text = title, FontSize = 14.5, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap };
+        heading.SetResourceReference(TextBlock.ForegroundProperty, "TextPrimary");
+        return heading;
+    }
+
+    internal static TextBlock DetailText(string text, string brush)
+    {
+        var line = new TextBlock { Text = text, FontSize = 13, LineHeight = 19, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0) };
+        line.SetResourceReference(TextBlock.ForegroundProperty, brush);
+        return line;
+    }
+
+    // A notice from the store about this skill (it changed, it went away …): a gold dot on the card, the text in its details.
+    private static Border NoticeDot(string notice)
+    {
+        var dot = new Border { Width = 8, Height = 8, CornerRadius = new CornerRadius(4), Margin = new Thickness(0, 0, 6, 0), ToolTip = notice,
+            VerticalAlignment = VerticalAlignment.Center };
+        dot.SetResourceReference(Border.BackgroundProperty, "Accent");
+        AutomationProperties.SetName(dot, "알림 · " + notice);
+        return dot;
     }
 
     // 출처 and what it says: a link opens in the browser, a user id is only shown.

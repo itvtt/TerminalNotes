@@ -118,30 +118,24 @@ internal sealed partial class SkillStoreDialog
         return note;
     }
 
+    // One line like the store's cards: the title, 자동 and the version, ⋯ and the switch; a click opens the description and where
+    // and how often it was used.
     private Border MyCard(MySkills.Skill skill)
     {
         var layout = new Grid();
-        layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        layout.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        var head = new DockPanel();
+        layout.ColumnDefinitions.Add(new ColumnDefinition());
+        layout.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        layout.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        layout.Children.Add(new TextBlock { Text = skill.Title, FontSize = 14, FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis,
+            VerticalAlignment = VerticalAlignment.Center, ToolTip = skill.Title });
         var marks = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(6, 0, 0, 0) };
         if (skill.Learned) marks.Children.Add(Badge("자동", "작업에서 자동으로 배운 스킬"));
         if (skill.Version > 1) marks.Children.Add(Badge($"v{skill.Version}", "고친 횟수만큼 버전이 올라갑니다."));
-        DockPanel.SetDock(marks, Dock.Right);
-        head.Children.Add(marks);
-        head.Children.Add(new TextBlock { Text = skill.Title, FontSize = 14.5, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap,
-            TextTrimming = TextTrimming.CharacterEllipsis, MaxHeight = 42, VerticalAlignment = VerticalAlignment.Center, ToolTip = skill.Name });
-        layout.Children.Add(head);
-        if (skill.Description.Length > 0)
-        {
-            var detail = new TextBlock { Text = skill.Description, FontSize = 13, LineHeight = 19, TextWrapping = TextWrapping.Wrap,
-                TextTrimming = TextTrimming.CharacterEllipsis, MaxHeight = 57, Margin = new Thickness(0, 8, 0, 0) };
-            detail.SetResourceReference(TextBlock.ForegroundProperty, "TextSecondary");
-            Grid.SetRow(detail, 1);
-            layout.Children.Add(detail);
-        }
-        var foot = new DockPanel { Margin = new Thickness(0, 10, -6, -4) };
+        Grid.SetColumn(marks, 1);
+        layout.Children.Add(marks);
+        var details = new StackPanel();
+        details.Children.Add(DetailTitle(skill.Title));
+        if (skill.Description.Length > 0) details.Children.Add(DetailText(skill.Description, "TextSecondary"));
         var menu = StoreLook.Menu();
         StoreLook.Item(menu, "수정", () => Edit(skill));
         if (MySkills.Versions(skill.Name).Count > 0) StoreLook.Item(menu, "이전 버전", () => ShowMyVersions(skill));
@@ -162,22 +156,16 @@ internal sealed partial class SkillStoreDialog
         var actions = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
         actions.Children.Add(more);
         actions.Children.Add(toggle);
-        DockPanel.SetDock(actions, Dock.Right);
-        foot.Children.Add(actions);
+        Grid.SetColumn(actions, 2);
+        layout.Children.Add(actions);
         string where = skill.Project is { Length: > 0 } project ? Path.GetFileName(project.TrimEnd('\\', '/')) : "";
-        var meta = new TextBlock { FontSize = 11.5, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis,
+        var meta = new TextBlock { FontSize = 11.5, Margin = new Thickness(0, 8, 0, 0), TextTrimming = TextTrimming.CharacterEllipsis,
             Text = string.Join(" · ", new[] { skill.Updated.ToLocalTime().ToString("yyyy-MM-dd"), where, skill.Uses > 0 ? $"사용 {skill.Uses}회" : "" }.Where(part => part.Length > 0)),
             ToolTip = skill.LastUsed is { } used ? "마지막 사용 " + used.ToLocalTime().ToString("yyyy-MM-dd HH:mm") : "아직 쓰지 않음" };
         meta.SetResourceReference(TextBlock.ForegroundProperty, "Accent");
-        foot.Children.Add(meta);
-        Grid.SetRow(foot, 2);
-        layout.Children.Add(foot);
-        var card = new Border { Child = layout, Tag = skill.Name, CornerRadius = new CornerRadius(10), Padding = new Thickness(16, 14, 14, 10),
-            Margin = new Thickness(6), MinHeight = 136, BorderThickness = new Thickness(1), ContextMenu = menu };
-        card.SetResourceReference(Border.BackgroundProperty, "Surface");
-        card.SetResourceReference(Border.BorderBrushProperty, "ButtonLine");
-        card.MouseEnter += (_, _) => card.SetResourceReference(Border.BorderBrushProperty, "ButtonLineHover");
-        card.MouseLeave += (_, _) => card.SetResourceReference(Border.BorderBrushProperty, "ButtonLine");
+        details.Children.Add(meta);
+        var card = CompactCard(layout, skill.Name, menu);
+        AttachDetails(card, layout, details, menu);
         return card;
     }
 
