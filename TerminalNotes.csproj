@@ -8,7 +8,7 @@
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
     <PlatformTarget>x64</PlatformTarget>
-    <Version>2.1.1</Version>
+    <Version>2.1.2</Version>
     <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
     <DefaultItemExcludes>$(DefaultItemExcludes);relay\**;tests\**;artifacts\**;dist\**;TerminalEngine\**;TerminalTransport\**;TerminalDesktop\**;installer\**;out\**;build\**</DefaultItemExcludes>
     <DefineConstants>$(DefineConstants);TN_WPF</DefineConstants>
@@ -59,10 +59,17 @@
     <ZipDirectory SourceDirectory="$(PublishDir)" DestinationFile="$(ReleaseZip)" Overwrite="true" />
   </Target>
 
+  <!-- Build settings file: .env in the repository, otherwise TerminalNotes.env in the profile folder
+       (user environment variable APPS_ENV_DIR), so no .env has to live in the project folder. -->
+  <PropertyGroup>
+    <AppEnvFile Condition="'$(AppEnvFile)' == '' and Exists('$(MSBuildProjectDirectory)\.env')">$(MSBuildProjectDirectory)\.env</AppEnvFile>
+    <AppEnvFile Condition="'$(AppEnvFile)' == '' and '$(APPS_ENV_DIR)' != '' and Exists('$(APPS_ENV_DIR)\TerminalNotes.env')">$(APPS_ENV_DIR)\TerminalNotes.env</AppEnvFile>
+  </PropertyGroup>
+
   <!-- Problem reports, the skill store and shared announcements go to the relay (relay\relay.py). Its address and key come from .env;
        only those two values are written to report-relay.json, never the admin password. -->
   <Target Name="WriteReportRelayConfig" BeforeTargets="AssignTargetPaths">
-    <ReadLinesFromFile File="$(MSBuildProjectDirectory)\.env" Condition="Exists('$(MSBuildProjectDirectory)\.env')">
+    <ReadLinesFromFile File="$(AppEnvFile)" Condition="'$(AppEnvFile)' != '' and Exists('$(AppEnvFile)')">
       <Output TaskParameter="Lines" ItemName="_RelayEnvLine" />
     </ReadLinesFromFile>
     <ItemGroup>
@@ -97,7 +104,7 @@
   <!-- AGENT_SELECTION=yes in .env lets each terminal use OpenCode, Claude Code or Codex (home build);
        anything else keeps every terminal on OpenCode (default build). Written to features.json next to the app. -->
   <Target Name="WriteFeatureConfig" BeforeTargets="AssignTargetPaths">
-    <ReadLinesFromFile File="$(MSBuildProjectDirectory)\.env" Condition="Exists('$(MSBuildProjectDirectory)\.env')">
+    <ReadLinesFromFile File="$(AppEnvFile)" Condition="'$(AppEnvFile)' != '' and Exists('$(AppEnvFile)')">
       <Output TaskParameter="Lines" ItemName="_FeatureEnvLine" />
     </ReadLinesFromFile>
     <ItemGroup>
@@ -122,7 +129,7 @@
        Compiled into the assembly (not a file users could edit); without the line the built-in default applies
        (test_01, test_07, test_08). The earlier per-feature lines are no longer read: the build warns when it finds one. -->
   <Target Name="EmbedAccountLists" BeforeTargets="GetAssemblyAttributes">
-    <ReadLinesFromFile File="$(MSBuildProjectDirectory)\.env" Condition="Exists('$(MSBuildProjectDirectory)\.env')">
+    <ReadLinesFromFile File="$(AppEnvFile)" Condition="'$(AppEnvFile)' != '' and Exists('$(AppEnvFile)')">
       <Output TaskParameter="Lines" ItemName="_AccountEnvLine" />
     </ReadLinesFromFile>
     <ItemGroup>
@@ -141,7 +148,7 @@
   <!-- OPENCODE_INSTALL_COMMAND in .env: the PowerShell command the app runs (in its own window) when OpenCode is missing.
        Compiled into the assembly (OpenCodeInstallCommand in Services.cs). -->
   <Target Name="EmbedInstallCommand" BeforeTargets="GetAssemblyAttributes">
-    <ReadLinesFromFile File="$(MSBuildProjectDirectory)\.env" Condition="Exists('$(MSBuildProjectDirectory)\.env')">
+    <ReadLinesFromFile File="$(AppEnvFile)" Condition="'$(AppEnvFile)' != '' and Exists('$(AppEnvFile)')">
       <Output TaskParameter="Lines" ItemName="_InstallEnvLine" />
     </ReadLinesFromFile>
     <ItemGroup>
@@ -157,7 +164,7 @@
   </Target>
   <!-- Auto-update source: UPDATE_* lines in .env become update.json next to the app (see .env.sample). -->
   <Target Name="WriteUpdateConfig" BeforeTargets="AssignTargetPaths">
-    <ReadLinesFromFile File="$(MSBuildProjectDirectory)\.env" Condition="Exists('$(MSBuildProjectDirectory)\.env')">
+    <ReadLinesFromFile File="$(AppEnvFile)" Condition="'$(AppEnvFile)' != '' and Exists('$(AppEnvFile)')">
       <Output TaskParameter="Lines" ItemName="_UpdateEnvLine" />
     </ReadLinesFromFile>
     <ItemGroup>

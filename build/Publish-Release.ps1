@@ -23,15 +23,18 @@ if (-not $Version) {
     [xml]$project = Get-Content (Join-Path $root 'TerminalNotes.csproj') -Encoding UTF8
     $Version = @($project.Project.PropertyGroup.Version | Where-Object { $_ })[0]
 }
-if (-not (Test-Path (Join-Path $root '.env'))) {
+# Build settings: .env in the repository, otherwise TerminalNotes.env in the profile folder (APPS_ENV_DIR), like TerminalNotes.csproj
+$envFile = Join-Path $root '.env'
+if (-not (Test-Path $envFile) -and $env:APPS_ENV_DIR -and (Test-Path (Join-Path $env:APPS_ENV_DIR 'TerminalNotes.env'))) { $envFile = Join-Path $env:APPS_ENV_DIR 'TerminalNotes.env' }
+if (-not (Test-Path $envFile)) {
     if ($env:GITHUB_ACTIONS -eq 'true') { Write-Warning '.env not found: no problem reports; updates check this repository without a token (UPDATE_TOKEN).' }
     else { Write-Warning '.env not found: the build will not report problems or check for updates.' }
 }
 else {
     # On the Actions runner an empty UPDATE_REPOSITORY falls back to the runner's repository (TerminalNotes.csproj).
-    $updateRepository = @(Get-Content (Join-Path $root '.env') -Encoding UTF8 | Where-Object { $_ -match '^UPDATE_REPOSITORY=\s*\S' })
+    $updateRepository = @(Get-Content $envFile -Encoding UTF8 | Where-Object { $_ -match '^UPDATE_REPOSITORY=\s*\S' })
     if ($updateRepository.Count -eq 0 -and $env:GITHUB_ACTIONS -ne 'true') {
-        Write-Warning 'UPDATE_REPOSITORY is empty in .env: this build will not check for updates.'
+        Write-Warning "UPDATE_REPOSITORY is empty in $envFile`: this build will not check for updates."
     }
 }
 
