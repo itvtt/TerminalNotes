@@ -27,8 +27,6 @@ public partial class MainWindow
         public DateTimeOffset Since;
         public bool WasWorking;
         public AgentState? Reported;
-        /// <summary>A terminal that took back a kept server: whether its agent finished while the app was closed is still to be told.</summary>
-        public bool KeptCheck;
     }
 
     /// <summary>What a terminal's new reading tells: blocked or finished once it held a few seconds (not a blink), once each time;
@@ -58,13 +56,13 @@ public partial class MainWindow
         return taskOwned ? AgentNotice.FinishedQuietly : AgentNotice.Done;
     }
 
-    private static readonly TimeSpan AgentStateHold = TimeSpan.FromSeconds(3), KeptSettle = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan AgentStateHold = TimeSpan.FromSeconds(3);
     private Button? _agentBoardButton;
     private TextBlock? _agentBoardSummary;
     private Popup? _agentBoardPopup;
     private StackPanel? _agentBoardRows;
     private DispatcherTimer? _agentBoardTimer;
-    private bool _keptReconnected;
+    private bool _leftoversStopped;
     private readonly Dictionary<TerminalPane, AgentWatch> _agentWatch = new();
 
     /// <summary>The summary the button shows, for tests and accessibility</summary>
@@ -86,17 +84,7 @@ public partial class MainWindow
         AutomationProperties.SetName(_agentBoardButton, "에이전트 현황");
         AutomationProperties.SetAutomationId(_agentBoardButton, "AgentBoardButton");
         _agentBoardRows = new StackPanel();
-        // Under the list: whether working agents go on after the app closes (KeptServers).
-        var keep = new CheckBox { Content = "앱을 닫아도 작업 중인 에이전트는 계속 실행", Margin = new Thickness(8, 8, 8, 4), FontSize = 12.5,
-            ToolTip = "닫을 때 작업 중이거나 답을 기다리는 태스크 터미널의 OpenCode 서버를 남겨 두고, 다시 열면 그대로 이어 붙입니다.\n24시간 안에 다시 열지 않으면 다음 시작 때 멈춥니다." };
-        keep.SetResourceReference(Control.ForegroundProperty, "TextSecondary");
-        AutomationProperties.SetAutomationId(keep, "KeepAgentsRunning");
-        keep.Loaded += (_, _) => keep.IsChecked = KeptServers.Enabled;
-        keep.Click += (_, _) => KeptServers.Enabled = keep.IsChecked == true;
-        var content = new DockPanel();
-        DockPanel.SetDock(keep, Dock.Bottom);
-        content.Children.Add(keep);
-        content.Children.Add(new ScrollViewer { MaxHeight = 440, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = _agentBoardRows });
+        var content = new ScrollViewer { MaxHeight = 440, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = _agentBoardRows };
         var frame = new Border
         {
             Width = 380, Margin = new Thickness(0, 8, 0, 0), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(8), Padding = new Thickness(8),
@@ -164,11 +152,11 @@ public partial class MainWindow
     {
         if (_closing || _closePending || _agentBoardSummary is null) return;
         CheckBackgroundWork();
-        // Servers kept while the app was closed are taken back once OpenCode was checked at start.
-        if (!_keptReconnected && _openCodeReady && IsLoaded)
+        // Servers an earlier version left running after it closed are stopped once, at start.
+        if (!_leftoversStopped)
         {
-            _keptReconnected = true;
-            ReconnectKeptAgents();
+            _leftoversStopped = true;
+            StopLeftoverServers();
         }
         var tabs = TerminalTabs.Items.Cast<TabItem>().ToArray();
         var panes = tabs.Select(tab => ((TerminalTabState)tab.Tag).Pane).ToHashSet();
@@ -180,7 +168,7 @@ public partial class MainWindow
             var state = (TerminalTabState)tab.Tag;
             AgentState current = StateOf(state.Pane);
             counts[current] = counts.GetValueOrDefault(current) + 1;
-            if (!_agentWatch.TryGetValue(state.Pane, out var watch)) _agentWatch[state.Pane] = watch = new AgentWatch { KeptCheck = state.Pane.WasKeptRunning };
+            if (!_agentWatch.TryGetValue(state.Pane, out var watch)) _agentWatch[state.Pane] = watch = new AgentWatch();
             bool taskOwned = _taskNotificationBindings.Values.Any(binding => ReferenceEquals(binding.Pane, state.Pane));
             switch (Observe(watch, current, now, taskOwned))
             {
@@ -190,21 +178,6 @@ public partial class MainWindow
                     LearnFrom(state.Pane);
                     break;
                 case AgentNotice.FinishedQuietly: LearnFrom(state.Pane); break;
-            }
-            // Taken back after the app was closed: still working is told as usual when it ends; work that ended meanwhile is told
-            // once the terminal is ready and has stayed idle a few seconds (its status read, not a moment before).
-            if (watch.KeptCheck && state.Pane.IsReady)
-            {
-                if (current is AgentState.Working or AgentState.Blocked) watch.KeptCheck = false;
-                else if (now - watch.Since >= KeptSettle)
-                {
-                    watch.KeptCheck = false;
-                    watch.WasWorking = false;
-                    // Told on the window too: a notification is left out while the user looks at that terminal.
-                    SetStatus($"{ProjectDisplayName(state.Pane.WorkingDirectory)} · 앱을 닫은 동안 작업을 마쳤습니다.");
-                    NotifyAgent(tab, "작업 완료", "앱을 닫은 동안 작업을 마쳤습니다.");
-                    LearnFrom(state.Pane);
-                }
             }
         }
         // Agents in outside terminals count too (working or waiting: their state is read from CPU use).

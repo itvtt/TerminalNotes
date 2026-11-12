@@ -123,7 +123,7 @@ internal static class Program
                     Assert(window.AgentBoardSummary.Contains("작업 중", StringComparison.Ordinal), "while Claude Code works the board says so");
                     string working = window.ExitConfirmation();
                     Log("exit question while working: " + working.Replace('\n', ' '));
-                    Assert(working.Contains("Claude Code·Codex 1개(csvtask)는 앱을 닫으면 멈춥니다", StringComparison.Ordinal), "the exit question says its work would stop");
+                    Assert(working.Contains("작업 중인 에이전트 1개(csvtask)도 멈춥니다", StringComparison.Ordinal), "the exit question says its work would stop");
                 }
                 return claude.IsAskingUser || File.Exists(done);
             }, "Claude Code asks for permission (or is done)", 120, 500);
@@ -136,7 +136,7 @@ internal static class Program
                 Assert(Notices.Any(notice => notice.StartsWith("확인 필요", StringComparison.Ordinal)), "the user is told it needs them");
                 string question = window.ExitConfirmation();
                 Log("exit question: " + question.Replace('\n', ' '));
-                Assert(question.Contains("Claude Code·Codex 1개(csvtask)는 앱을 닫으면 멈춥니다", StringComparison.Ordinal), "the exit question says its work would stop");
+                Assert(question.Contains("작업 중인 에이전트 1개(csvtask)도 멈춥니다", StringComparison.Ordinal), "the exit question says its work would stop");
                 Log("approving the first choice");
                 await AnswerAsync(claude, down: false);
             }

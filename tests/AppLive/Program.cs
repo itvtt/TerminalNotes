@@ -11,8 +11,8 @@ using Application = System.Windows.Application;
 
 // End to end in the real app window with real OpenCode terminals and the real (free) model:
 // a scheduled job opens its task's terminal and sends its instruction; the agent works (the board says so); the app closes while it
-// works and its server is kept; the work finishes while the app is closed; the app opens again, takes the same server and session
-// back, tells that the work finished meanwhile and learns from it; closing then with the agent idle stops the server.
+// works: the question says the agent stops, and its server and work end with the app; the app opens again with nothing running,
+// the task's conversation is found in 지난 대화 검색 and goes on in that session; closing then stops the new server.
 internal static class Program
 {
     private static int _failures;
@@ -31,7 +31,7 @@ internal static class Program
             finally { app.Shutdown(); }
         };
         app.Run();
-        Console.WriteLine(_failures == 0 ? "PASS app live: scheduled job, board, keep running across close, take back, told and learned" : $"FAIL app live ({_failures})");
+        Console.WriteLine(_failures == 0 ? "PASS app live: scheduled job, board, closing ends the work, nothing comes back, search and resume" : $"FAIL app live ({_failures})");
         return _failures;
     }
 
@@ -62,8 +62,8 @@ internal static class Program
         AppContext.SetData("TerminalNotes.ScheduledJobsPath", Path.Combine(root, "jobs.json"));
         var hooks = new OpenCodeStartupHooks(_ => Task.FromResult(true), () => false, _ => throw new InvalidOperationException("no installs in tests"));
         string done = Path.Combine(project, "done.txt");
-        int keptId = 0;
-        string keptSession = "";
+        int serverId = 0, againId = 0;
+        string session = "";
         try
         {
             // ── 1. The app with a scheduled job due now.
@@ -113,46 +113,33 @@ internal static class Program
             Assert(first.AgentBoardSummary.Contains("작업 중", StringComparison.Ordinal), "the board says it works");
             Assert(Notices.Count == 0, "working is not notified");
 
-            // ── 2. Close while it works: the confirmation says it goes on; the server is kept. (The window's × only hides it in the
-            // tray; 종료 asks, then disposes and closes: the same steps here, without shutting the test down.)
-            keptSession = pane.LearningSource?.SessionId ?? "";
+            // ── 2. Close while it works: the question says the agent stops; its server and work end with the app (2026-11-12 사용자:
+            // "트레이에서 앱을 닫으면 모든 실행이 종료되어야 하는데"). (The window's × only hides it in the tray; 종료 asks, then disposes
+            // and closes: the same steps here, without shutting the test down.)
+            session = pane.LearningSource?.SessionId ?? "";
+            serverId = pane.ServerProcessId ?? 0;
             string question = first.ExitConfirmation();
             Log("exit question: " + question.Replace('\n', ' '));
-            Assert(question.StartsWith("작업 중인 에이전트 1개(report-task)는 앱을 닫아도 계속 실행되고", StringComparison.Ordinal), "the exit question says the working agent goes on");
+            Assert(question.StartsWith("앱을 닫으면 열려 있는 모든 터미널", StringComparison.Ordinal) &&
+                question.Contains("작업 중인 에이전트 1개(report-task)도 멈춥니다", StringComparison.Ordinal), "the exit question says the working agent stops");
             Call(first, "DisposeResources");
             first.Close();
-            await Task.Delay(1500);
-            var kept = KeptServers.List();
-            Log($"kept: {string.Join(", ", kept.Select(server => $"{server.ProcessId}:{server.Port}:{server.SessionId}"))}");
-            Assert(kept.Count == 1 && KeptServers.Alive(kept[0]) && kept[0].SessionId == keptSession, "closing the app keeps the working agent's server");
-            keptId = kept.FirstOrDefault()?.ProcessId ?? 0;
-            Assert(!File.Exists(done), "the work is not done yet when the app closes");
+            await Until(() => !Running(serverId), "closing the app stops the working agent's server", 15);
+            Assert(!File.Exists(done), "the work is not done when the app closes");
+            // The instruction waits 60 seconds before writing done.txt: with the server gone it never comes.
+            await Task.Delay(75_000);
+            Assert(!File.Exists(done), "the work does not go on after the app closed");
 
-            // ── 3. The work goes on while the app is closed.
-            await Until(() => File.Exists(done), "the work finishes while the app is closed", 300, 2000);
-            Log("done.txt: " + File.ReadAllText(done).Trim());
-            await Task.Delay(8000);
-
-            // ── 4. The app again: the same server and session are taken back; the finish is told and learned from.
+            // ── 3. The app again: nothing comes back on its own; the task's terminal is opened by hand.
             var second = Open(settings, hooks);
-            await Until(() => Panes(second).Count == 1, "the task's terminal opens again at start", 60);
+            await Until(() => Field<bool>(second, "_openCodeReady"), "OpenCode checked at start", 30);
+            await Task.Delay(3000);
+            Assert(Panes(second).Count == 0, "no terminal opens again on its own");
+            second.GetType().GetMethod("OpenTaskTerminal", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(second, [project]);
             var again = Panes(second).Single();
-            int readyPolls = 0;
-            await Until(() =>
-            {
-                if (++readyPolls % 40 == 1) Log("  " + Describe(again));
-                return again.IsReady;
-            }, "the terminal is ready", 120);
-            second.WindowState = WindowState.Minimized;
-            Log($"taken back: pid {again.ServerProcessId} (kept {keptId}), session {again.LearningSource?.SessionId}");
-            Assert(again.WasKeptRunning && again.ServerProcessId == keptId, "it took the same server back (no new one)");
-            Assert(again.LearningSource?.SessionId == keptSession, "in the same session");
-            Assert(KeptServers.List().Count == 0, "taken back, it is no longer written down");
-            // Told as a notification, or (the user looking at that very terminal) on the window's status line.
-            await Until(() => Notices.Any(notice => notice.Contains("앱을 닫은 동안", StringComparison.Ordinal)) ||
-                Texts(second).Any(text => text.Contains("앱을 닫은 동안 작업을 마쳤습니다", StringComparison.Ordinal)), "the finish while closed is told", 40);
-            Log("notices: " + string.Join(" | ", Notices));
-            Assert(Learned.Count == 1, "and learned from once");
+            await Until(() => again.IsReady, "the task's terminal is ready", 120);
+            againId = again.ServerProcessId ?? 0;
+            Assert(againId != 0 && againId != serverId, "with a server of its own");
 
             // ── 4b. 지난 대화 검색 from the window's button, through this terminal's server: the job's conversation is found and 이어가기
             // opens that session.
@@ -170,21 +157,20 @@ internal static class Program
             Log("search: " + string.Join(" | ", Texts(hit).Take(3)));
             Assert(Texts(hit).Any(text => text.Contains("report-task", StringComparison.Ordinal)), "the hit names its task");
             Descendants(hit).OfType<Button>().First(button => button.Content as string == "이어가기").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            Assert(resumed is { } chosen && chosen.Session == keptSession && string.Equals(Path.GetFullPath(chosen.Project), Path.GetFullPath(project), StringComparison.OrdinalIgnoreCase),
+            Assert(resumed is { } chosen && chosen.Session == session && string.Equals(Path.GetFullPath(chosen.Project), Path.GetFullPath(project), StringComparison.OrdinalIgnoreCase),
                 "이어가기 opens that very session in its task folder");
             search.Close();
 
-            // ── 5. Closing with the agent idle stops the server.
-            Assert(second.ExitConfirmation().StartsWith("앱을 닫으면 열려 있는 모든 터미널", StringComparison.Ordinal), "with the agent idle, the exit question says everything ends");
+            // ── 4. Closing with the agent idle stops its server too.
+            Assert(second.ExitConfirmation() == "앱을 닫으면 열려 있는 모든 터미널과 실행 중인 프로그램이 종료됩니다. 닫을까요?", "with the agent idle, the exit question is the usual one");
             Call(second, "DisposeResources");
             second.Close();
-            await Task.Delay(6000);
-            Assert(!Running(keptId) && KeptServers.List().Count == 0, "closing with an idle agent stops its server and keeps nothing");
+            await Until(() => !Running(againId), "closing the app stops the idle agent's server", 15);
         }
         finally
         {
-            if (keptId != 0 && Running(keptId)) try { Process.GetProcessById(keptId).Kill(true); } catch { }
-            foreach (var server in KeptServers.List()) KeptServers.Stop(server);
+            foreach (int id in new[] { serverId, againId })
+                if (id != 0 && Running(id)) try { Process.GetProcessById(id).Kill(true); } catch { }
             await Task.Delay(500);
             try { Directory.Delete(root, true); } catch { }
         }
@@ -223,7 +209,7 @@ internal static class Program
     }
 
     private static string Describe(TerminalPane p) =>
-        $"ready {p.IsReady} running {p.IsRunning} '{p.ActivityLabel}' kept {p.WasKeptRunning} server {p.ServerProcessId} loaded {p.IsLoaded} size {p.ActualWidth:0}x{p.ActualHeight:0}" +
+        $"ready {p.IsReady} running {p.IsRunning} '{p.ActivityLabel}' server {p.ServerProcessId} loaded {p.IsLoaded} size {p.ActualWidth:0}x{p.ActualHeight:0}" +
         $" dims {Field<object?>(p, "_pendingWebReadyDimensions")} started {Field<int>(p, "_openCodeTuiStartAttempted")} failed {Field<bool>(p, "_failed")}" +
         $" wait '{Field<object?>(p, "_resourceWaitReason")}' notice '{(Field<object?>(p, "_notice") as TextBlock)?.Text}' stage '{Field<object?>(p, "_tuiConnectionStage")}'";
 

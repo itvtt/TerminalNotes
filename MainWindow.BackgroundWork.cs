@@ -5,54 +5,40 @@ using TerminalNotes.Services;
 
 namespace TerminalNotes;
 
-// 앱 꺼도 계속 실행 (herdr-like, see KeptServers): closing the app keeps the servers of task terminals whose agent is working or
-// waiting for an answer; the next start opens those tasks' terminals again, which take the same servers and sessions back.
+// Closing the app ends everything it runs (2026-11-12 사용자: "트레이에서 앱을 닫으면 모든 실행이 종료되어야 하는데? 개별로 터미널로
+// 빼낸거 말고는 앱내에서 도는건 종료되게 해야해"): its terminals, their servers and agents. Only windows it opened apart (+ 터미널,
+// CMD에서 이어가기) go on. 1.8.8 to 2.0.0 kept a working agent's server after the app closed; that is gone, and servers those
+// versions left running are stopped at the next start (LeftoverServers). Here also: work that starts on its own while the window is
+// in the tray or minimized (a scheduled job) gets its terminal laid out off the screens.
 public partial class MainWindow
 {
-    /// <summary>Only the app itself keeps servers (a test window with its own settings file does not, unless it points the list elsewhere).</summary>
-    private bool KeepsAgents => AppContext.GetData("TerminalNotes.KeptServersPath") is string ||
+    /// <summary>The app itself, not a test window with its own settings file (unless that points the leftover list elsewhere).</summary>
+    private bool IsTheApp => AppContext.GetData("TerminalNotes.KeptServersPath") is string ||
         string.Equals(Path.GetFullPath(_settingsPath), Path.GetFullPath(DefaultSettingsPath), StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>The terminals whose servers closing the app would keep: task terminals whose agent works or waits for an answer.</summary>
-    private List<TerminalPane> PanesToKeep() => !KeepsAgents || !KeptServers.Enabled ? [] :
-        TerminalTabs.Items.Cast<TabItem>().Select(tab => ((TerminalTabState)tab.Tag).Pane)
-            .Where(pane => StateOf(pane) is AgentState.Working or AgentState.Blocked && pane.CanKeepRunningAfterClose).ToList();
-
-    /// <summary>What closing the app asks: which agents go on (the others' terminals end).</summary>
+    /// <summary>What closing the app asks: everything ends, working agents too.</summary>
     internal string ExitConfirmation()
     {
-        var kept = PanesToKeep();
-        // Claude Code and Codex run inside the app's terminal: their work stops (the conversation stays, to go on from 지난 대화 검색).
-        var stopping = TerminalTabs.Items.Cast<TabItem>().Select(tab => ((TerminalTabState)tab.Tag).Pane)
-            .Where(pane => pane.IsTypedAgent && StateOf(pane) is AgentState.Working or AgentState.Blocked).ToList();
-        string Names(IEnumerable<TerminalPane> panes) =>
-            string.Join(", ", panes.Select(pane => ProjectDisplayName(pane.WorkingDirectory)).Distinct(StringComparer.OrdinalIgnoreCase).Take(3));
-        if (kept.Count == 0 && stopping.Count == 0) return "앱을 닫으면 열려 있는 모든 터미널과 실행 중인 프로그램이 종료됩니다. 닫을까요?";
-        var lines = new List<string>();
-        if (kept.Count > 0) lines.Add($"작업 중인 에이전트 {kept.Count}개({Names(kept)})는 앱을 닫아도 계속 실행되고, 다시 열면 그대로 이어집니다.");
-        if (stopping.Count > 0)
-            lines.Add($"작업 중인 Claude Code·Codex {stopping.Count}개({Names(stopping)})는 앱을 닫으면 멈춥니다. 대화는 남아 지난 대화 검색에서 이어갈 수 있습니다.");
-        if (TerminalTabs.Items.Count > kept.Count + stopping.Count) lines.Add("나머지 터미널은 종료됩니다.");
-        return string.Join("\n", lines) + " 닫을까요?";
+        const string everything = "앱을 닫으면 열려 있는 모든 터미널과 실행 중인 프로그램이 종료됩니다.";
+        var working = TerminalTabs.Items.Cast<TabItem>().Select(tab => ((TerminalTabState)tab.Tag).Pane)
+            .Where(pane => StateOf(pane) is AgentState.Working or AgentState.Blocked).ToList();
+        if (working.Count == 0) return everything + " 닫을까요?";
+        string names = string.Join(", ", working.Select(pane => ProjectDisplayName(pane.WorkingDirectory)).Distinct(StringComparer.OrdinalIgnoreCase).Take(3));
+        return $"{everything}\n작업 중인 에이전트 {working.Count}개({names})도 멈춥니다. 닫을까요?";
     }
 
-    /// <summary>At close, before the terminals are disposed: the working ones keep their servers. Returns how many.</summary>
-    internal int KeepWorkingAgents()
+    /// <summary>At start: servers an earlier version kept running after it closed are stopped (off the window's thread).</summary>
+    private void StopLeftoverServers()
     {
-        int kept = 0;
-        foreach (var pane in PanesToKeep())
+        if (!IsTheApp) return;
+        _ = Task.Run(() =>
         {
-            try
-            {
-                if (pane.KeepRunningAfterClose()) kept++;
-            }
+            try { LeftoverServers.StopAll(); }
             catch (Exception exception) when (exception is not OutOfMemoryException)
             {
-                System.Diagnostics.Trace.WriteLine("Keeping an agent failed: " + exception.GetType().Name);
+                System.Diagnostics.Trace.WriteLine("Stopping leftover servers failed: " + exception.GetType().Name);
             }
-        }
-        if (kept > 0) TaskMemoryGuard.Unlimit();
-        return kept;
+        });
     }
 
     /// <summary>A task's terminal the way starting a task opens it (its row, a free slot, the task selected, its terminal shown: a
@@ -83,7 +69,7 @@ public partial class MainWindow
 
     /// <summary>A terminal starts only once it is laid out, which a window in the tray or minimized never is (measured 2026-11-12: from
     /// the tray, and three times in four from a minimized window, a new terminal never started). For work that starts on its own (a
-    /// scheduled job, taking back a kept agent) the window is shown at its size off the screens, without focus, until those terminals
+    /// scheduled job) the window is shown at its size off the screens, without focus, until those terminals
     /// run; then it goes back (<see cref="ReturnFromBackgroundWork"/>). Its position is not saved, only its size.</summary>
     private void ShowForBackgroundWork()
     {
@@ -142,25 +128,4 @@ public partial class MainWindow
 
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern bool ShowWindow(IntPtr window, int command);
-
-    /// <summary>At start: the tasks whose agents went on working while the app was closed get their terminals again.</summary>
-    private void ReconnectKeptAgents()
-    {
-        if (!KeepsAgents || _closing) return;
-        IReadOnlyList<KeptServers.Server> servers;
-        try { servers = KeptServers.Sweep(); }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { return; }
-        var projects = servers.Select(server => server.Directory).Where(Directory.Exists).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-        int opened = 0;
-        foreach (string project in projects)
-        {
-            try
-            {
-                OpenTaskTerminal(project);
-                opened++;
-            }
-            catch (Exception exception) when (exception is InvalidOperationException or IOException or UnauthorizedAccessException) { }
-        }
-        if (opened > 0) SetStatus($"앱을 닫은 동안 계속 실행된 에이전트 {servers.Count}개에 다시 연결합니다.");
-    }
 }

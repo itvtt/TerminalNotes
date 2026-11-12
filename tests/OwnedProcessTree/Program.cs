@@ -123,7 +123,7 @@ internal static class Program
     private static (Process Process, IDisposable? Owner) Start(ProcessStartInfo info)
     {
         if (OwnerType is null) return (Process.Start(info)!, null); // RED exercises the current unowned host launch.
-        object owner = OwnerType.GetMethod("Start", BindingFlags.Static | BindingFlags.NonPublic)!.Invoke(null, [info, null, null, false])!;
+        object owner = OwnerType.GetMethod("Start", BindingFlags.Static | BindingFlags.NonPublic)!.Invoke(null, [info, null, null])!;
         return ((Process)OwnerType.GetProperty("Process", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(owner)!, (IDisposable)owner);
     }
     private static ProcessStartInfo Info(params string[] args)

@@ -19,7 +19,7 @@ public partial class MainWindow
     private int _externalScanTick = -1; // the first scan comes with the first tick, not while the window is built
 
     /// <summary>Only the app itself runs scheduled jobs (a test window does not, unless it points the list elsewhere).</summary>
-    private bool RunsJobs => AppContext.GetData("TerminalNotes.ScheduledJobsPath") is string || KeepsAgents;
+    private bool RunsJobs => AppContext.GetData("TerminalNotes.ScheduledJobsPath") is string || IsTheApp;
 
     private void InitializeHerdrExtras(StackPanel actions)
     {
@@ -115,11 +115,11 @@ public partial class MainWindow
     /// <summary>Replaces the scan of outside terminals (tests).</summary>
     internal Func<IReadOnlySet<int>, IReadOnlyList<ExternalAgents.Agent>>? ExternalScanOverride { get; set; }
 
-    /// <summary>Every third second: the agents in outside terminals (not this app's servers, TUIs or kept servers).</summary>
+    /// <summary>Every third second: the agents in outside terminals (not this app's servers or TUIs).</summary>
     private void ScanExternalAgents()
     {
         if (++_externalScanTick % 3 != 1) return;
-        var ours = Panes.Select(pane => pane.ServerProcessId).OfType<int>().Concat(KeptServers.List().Select(server => server.ProcessId)).ToHashSet();
+        var ours = Panes.Select(pane => pane.ServerProcessId).OfType<int>().ToHashSet();
         try { _externalAgents = ExternalScanOverride is { } scan ? scan(ours) : ExternalAgents.Scan(ours); }
         catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception) { _externalAgents = []; }
     }
