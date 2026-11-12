@@ -48,8 +48,8 @@ public partial class MainWindow
         // The list group already marks task drags handled (it accepts them for itself), so listen to handled events too.
         surface.AddHandler(DragDrop.DragOverEvent, new DragEventHandler((_, e) =>
         {
-            if (TaskReorderSource(e.Data, project) is null) { HideTaskDropLine(); return; }
-            ShowTaskDropLine(surface, e.GetPosition(surface).Y > surface.ActualHeight / 2);
+            if (TaskReorderSource(e.Data, project) is not { } dragged) { HideTaskDropLine(); return; }
+            ShowTaskDropLine(surface, DropPlaceFor(surface, e, dragged, project));
             e.Effects = DragDropEffects.Move;
             e.Handled = true;
         }), handledEventsToo: true);
@@ -58,7 +58,9 @@ public partial class MainWindow
         {
             HideTaskDropLine();
             if (TaskReorderSource(e.Data, project) is not { } moved) return;
-            MoveTaskInOrder(moved, project, e.GetPosition(surface).Y > surface.ActualHeight / 2);
+            var place = DropPlaceFor(surface, e, moved, project);
+            if (place == DropPlace.Into) _ = MoveIntoTaskAsync(moved, project);
+            else MoveTaskInOrder(moved, project, place == DropPlace.Below);
             e.Effects = DragDropEffects.Move;
             e.Handled = true;
         }), handledEventsToo: true);
@@ -67,7 +69,9 @@ public partial class MainWindow
     private string? TaskReorderSource(IDataObject data, string target) =>
         !_planWorkMode && !_closing && !_closePending && _titleEditor is null &&
         data.GetDataPresent(TaskSlotDragFormat) && data.GetData(TaskSlotDragFormat) is string moved &&
-        !DirectoriesEqual(moved, target) && _projectTaskRows.ContainsKey(CanonicalProjectPath(moved)) ? CanonicalProjectPath(moved) : null;
+        !DirectoriesEqual(moved, target) && _projectTaskRows.ContainsKey(CanonicalProjectPath(moved)) &&
+        // Sub-tasks stay under their parent (in name order); only top tasks are dragged.
+        ParentTaskOf(moved) is null && ParentTaskOf(target) is null ? CanonicalProjectPath(moved) : null;
 
     /// <summary>Puts <paramref name="moved"/> just above (or below) <paramref name="target"/> and saves the order.</summary>
     internal void MoveTaskInOrder(string moved, string target, bool below)
@@ -98,12 +102,22 @@ public partial class MainWindow
 
     private void ForgetTaskOrderEntry(string project) => _taskOrder.RemoveAll(path => DirectoriesEqual(path, project));
 
-    private void ShowTaskDropLine(Border surface, bool below)
+    internal enum DropPlace { Above, Below, Into }
+
+    // The top and bottom quarter of a row reorder; its middle puts the dragged task under it (when it may go there).
+    private DropPlace DropPlaceFor(FrameworkElement surface, DragEventArgs e, string dragged, string target)
     {
-        if (_taskDropLine is { } shown && ReferenceEquals(shown.AdornedElement, surface)) { shown.SetBelow(below); return; }
+        double y = e.GetPosition(surface).Y, height = Math.Max(1, surface.ActualHeight);
+        if (y > height * 0.28 && y < height * 0.72 && MoveIntoProblem(dragged, target) is null) return DropPlace.Into;
+        return y > height / 2 ? DropPlace.Below : DropPlace.Above;
+    }
+
+    private void ShowTaskDropLine(Border surface, DropPlace place)
+    {
+        if (_taskDropLine is { } shown && ReferenceEquals(shown.AdornedElement, surface)) { shown.SetPlace(place); return; }
         HideTaskDropLine();
         if (AdornerLayer.GetAdornerLayer(surface) is not { } layer) return;
-        _taskDropLine = new TaskDropLine(surface, below);
+        _taskDropLine = new TaskDropLine(surface, place);
         layer.Add(_taskDropLine);
     }
 
@@ -114,24 +128,26 @@ public partial class MainWindow
         AdornerLayer.GetAdornerLayer(line.AdornedElement)?.Remove(line);
     }
 
-    // A gold line in the gap above or below the row where the dragged task will land.
+    // A gold line in the gap above or below the row where the dragged task will land, or a gold frame with "하위로 넣기" around the
+    // row it would go under.
     private sealed class TaskDropLine : Adorner
     {
         private static readonly Pen Line = CreatePen();
-        private bool _below;
+        private DropPlace _place;
 
-        internal TaskDropLine(UIElement adorned, bool below) : base(adorned)
+        internal TaskDropLine(UIElement adorned, DropPlace place) : base(adorned)
         {
-            _below = below;
+            _place = place;
             IsHitTestVisible = false;
         }
 
-        internal bool Below => _below;
+        internal bool Below => _place == DropPlace.Below;
+        internal DropPlace Place => _place;
 
-        internal void SetBelow(bool below)
+        internal void SetPlace(DropPlace place)
         {
-            if (_below == below) return;
-            _below = below;
+            if (_place == place) return;
+            _place = place;
             InvalidateVisual();
         }
 
@@ -144,8 +160,19 @@ public partial class MainWindow
 
         protected override void OnRender(DrawingContext drawingContext)
         {
-            double y = _below ? AdornedElement.RenderSize.Height + 3 : -3;
-            drawingContext.DrawLine(Line, new Point(2, y), new Point(Math.Max(2, AdornedElement.RenderSize.Width - 2), y));
+            var size = AdornedElement.RenderSize;
+            if (_place == DropPlace.Into)
+            {
+                drawingContext.DrawRoundedRectangle(null, Line, new Rect(1, 1, Math.Max(2, size.Width - 2), Math.Max(2, size.Height - 2)), 6, 6);
+                var label = new FormattedText("하위로 넣기", System.Globalization.CultureInfo.CurrentUICulture, FlowDirection.LeftToRight,
+                    new Typeface("Segoe UI"), 11.5, Line.Brush, VisualTreeHelper.GetDpi(this).PixelsPerDip);
+                var box = new Rect(size.Width - label.Width - 16, (size.Height - label.Height) / 2 - 2, label.Width + 10, label.Height + 4);
+                drawingContext.DrawRoundedRectangle(new SolidColorBrush(Color.FromRgb(0x1F, 0x1F, 0x1F)), null, box, 4, 4);
+                drawingContext.DrawText(label, new Point(box.X + 5, box.Y + 2));
+                return;
+            }
+            double y = _place == DropPlace.Below ? size.Height + 3 : -3;
+            drawingContext.DrawLine(Line, new Point(2, y), new Point(Math.Max(2, size.Width - 2), y));
         }
     }
 }

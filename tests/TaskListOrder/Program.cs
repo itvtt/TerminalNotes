@@ -69,7 +69,7 @@ internal static class Program
             // Rows are realized by layout, as when the user drags over them.
             window.UpdateLayout();
             Dispatcher.CurrentDispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
-            Call(window, "ShowTaskDropLine", surface, true);
+            Call(window, "ShowTaskDropLine", surface, Enum.Parse(typeof(MainWindow).GetNestedType("DropPlace", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public)!, "Below"));
             var layer = AdornerLayer.GetAdornerLayer(surface);
             Require(layer?.GetAdorners(surface)?.Length == 1, "The drop line was not shown.");
             Call(window, "HideTaskDropLine");

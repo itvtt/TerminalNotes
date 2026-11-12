@@ -5543,7 +5543,7 @@ public partial class MainWindow
         if (_planMakers.ContainsKey(project)) return "PlanMaker 작업을 중단한 뒤 프로젝트를 이동하세요.";
         if (ProjectTaskIsRunning(project)) return "이 프로젝트의 작업 시작·실행·지속 개선을 중단한 뒤 이동하세요.";
         string? parent = Path.GetDirectoryName(CanonicalProjectPath(project));
-        if (!IsArchivedProject(project) && (parent is null || !DirectoriesEqual(parent, _workspace)))
+        if (!IsArchivedProject(project) && (parent is null || !DirectoriesEqual(parent, _workspace) && ParentTaskOf(project) is null))
             return "작업 폴더 또는 아카이브 바로 아래의 프로젝트만 이동할 수 있습니다.";
         foreach (var state in TerminalTabs.Items.Cast<TabItem>().Select(tab => tab.Tag).OfType<TerminalTabState>()
             .Where(state => DirectoriesEqual(state.Pane.WorkingDirectory, project)))
@@ -5559,11 +5559,37 @@ public partial class MainWindow
         return null;
     }
 
-    private async Task MoveProjectArchiveAsync(string project)
+    private Task MoveProjectArchiveAsync(string project)
+    {
+        project = CanonicalProjectPath(project);
+        return MoveProjectFolderAsync(project,
+            () => ProjectArchiveService.Destination(_workspace, project),
+            (name, multi) => ProjectArchiveService.MoveAsync(_workspace, project, name, multi),
+            (name, destination) =>
+            {
+                bool archived = IsArchivedProject(destination);
+                if (!archived)
+                {
+                    _showArchivedTasks = false;
+                    _showExcludedTasks = false;
+                    _normalTasksTab!.IsChecked = true;
+                }
+                return () =>
+                {
+                    SetStatus(archived ? "아카이브로 이동했습니다 · 보관한 위치에서 계속 개발할 수 있습니다." : "프로젝트를 작업 폴더로 복원했습니다.");
+                    if (archived) ShowProjectArchiveNotification(name, destination);
+                };
+            });
+    }
+
+    /// <summary>Moves a task's folder (archiving, or into and out of a parent task) the careful way: nothing running or scheduled,
+    /// edited plans saved, its terminals stopped and gone, then the folder moved and every binding moved with it.
+    /// <paramref name="moved"/> runs before the list is shown again and returns what to tell after it was saved.</summary>
+    private async Task MoveProjectFolderAsync(string project, Func<string> check, Func<string, bool, Task<string>> move, Func<string, string, Action> moved)
     {
         project = CanonicalProjectPath(project);
         if (ProjectArchiveBlockReason(project) is { } blockReason) { SetStatus(blockReason); return; }
-        try { _ = ProjectArchiveService.Destination(_workspace, project); }
+        try { _ = check(); }
         catch (Exception ex) { SetStatus("프로젝트 이동 불가 · " + ex.Message); return; }
         _projectArchiveWrites.Add(project);
         _projectTaskControlWrites.Add(project);
@@ -5614,7 +5640,7 @@ public partial class MainWindow
                 VerifyMoveOwnership();
             }
             VerifyMoveOwnership();
-            string destination = await ProjectArchiveService.MoveAsync(_workspace, project, name, multi);
+            string destination = await move(name, multi);
             // Keep stopped panes selectable on IO failure; remove them only after the folder rename succeeds.
             foreach (var tab in retiringTabs)
             {
@@ -5627,18 +5653,11 @@ public partial class MainWindow
             }
             runtime.Team.Clear(); runtime.SingleTerminal = null;
             RebindMovedProject(project, destination);
-            bool archived = IsArchivedProject(destination);
-            if (!archived)
-            {
-                _showArchivedTasks = false;
-                _showExcludedTasks = false;
-                _normalTasksTab!.IsChecked = true;
-            }
+            var told = moved(name, destination);
             ShowProjectTaskList();
             await PersistAutomationProjectsAsync();
             SaveSettings();
-            SetStatus(archived ? "아카이브로 이동했습니다 · 보관한 위치에서 계속 개발할 수 있습니다." : "프로젝트를 작업 폴더로 복원했습니다.");
-            if (archived) ShowProjectArchiveNotification(name, destination);
+            told();
         }
         catch (Exception ex) { SetStatus("프로젝트 이동 실패 · " + ex.Message); }
         finally
@@ -8756,14 +8775,22 @@ public partial class MainWindow
         string[] projects;
         try
         {
+            var subTasksOff = _subTaskParentsOff.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var subTaskFolders = _subTaskFolders.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var subTasks = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             _projectDirectoryScan = Task.Run(() =>
             {
-                return DiscoverProjectDirectories(workspace).Concat(DiscoverProjectDirectories(Path.Combine(workspace, ProjectArchiveService.FolderName)))
+                var top = DiscoverProjectDirectories(workspace).ToList();
+                // The project folders inside a task folder are tasks too (상위·하위 태스크).
+                subTasks = DiscoverSubTasks(top, subTasksOff, subTaskFolders);
+                return top.Concat(DiscoverProjectDirectories(Path.Combine(workspace, ProjectArchiveService.FolderName)))
+                    .Concat(subTasks.Keys)
                     .Concat(manual ? openedProjects.Where(Directory.Exists) : [])
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .OrderBy(path => Path.GetFileName(path), StringComparer.OrdinalIgnoreCase).ToArray();
             });
             projects = await _projectDirectoryScan;
+            _subTaskParents = subTasks.ToDictionary(pair => CanonicalProjectPath(pair.Key), pair => CanonicalProjectPath(pair.Value), StringComparer.OrdinalIgnoreCase);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -9034,14 +9061,21 @@ public partial class MainWindow
         delete.Click += async (_, e) => { e.Handled = true; await DeleteProjectToRecycleBinAsync(project); };
         var exclude = new MenuItem { Header = "목록에서 제외", ToolTip = "폴더와 플랜은 그대로 두고 태스크 목록에서만 숨깁니다. 제외 탭에서 다시 복원할 수 있습니다." };
         exclude.Click += (_, e) => { e.Handled = true; SetTaskExcluded(project, !IsExcludedTaskProject(project)); };
+        var subTasksItem = CreateSubTaskMenuItem(project);
+        var moveOut = new MenuItem { Header = "상위 태스크에서 꺼내기", ToolTip = "이 프로젝트 폴더를 작업 폴더 바로 아래로 옮겨 따로 된 태스크로 만듭니다." };
+        moveOut.Click += async (_, e) => { e.Handled = true; await MoveOutOfTaskAsync(project); };
         contextMenu.Opened += (_, _) =>
         {
             bool excludedNow = IsExcludedTaskProject(project);
             exclude.Header = excludedNow ? "목록으로 복원" : "목록에서 제외";
             // Same guard as archiving: a running or externally continued task stays in the list.
             exclude.IsEnabled = excludedNow || archive.IsEnabled;
-            archive.Visibility = excludedNow ? Visibility.Collapsed : Visibility.Visible;
+            archive.Visibility = excludedNow || ParentTaskOf(project) is not null ? Visibility.Collapsed : Visibility.Visible;
+            UpdateSubTaskMenuItem(project, subTasksItem);
+            moveOut.Visibility = ParentTaskOf(project) is not null && !excludedNow ? Visibility.Visible : Visibility.Collapsed;
         };
+        contextMenu.Items.Add(subTasksItem);
+        contextMenu.Items.Add(moveOut);
         contextMenu.Items.Add(new Separator()); contextMenu.Items.Add(exclude); contextMenu.Items.Add(archive); contextMenu.Items.Add(delete);
         EnableTaskSlotDrag(select, project);
         var titleHost = new Grid();
@@ -9963,6 +9997,8 @@ public partial class MainWindow
     {
         if (_taskTree is null) return;
         if (!IsVisibleTaskProject(project)) { DetachProjectTaskNode(node); return; }
+        if (PlaceUnderParentTask(project, node)) return;
+        DetachFromParentTask(node);
         var group = _taskOrderGroup;
         if (group is null) return;
         var currentGroup = _taskCategoryGroups.Values.FirstOrDefault(candidate => candidate.Items.Contains(node));
@@ -9999,6 +10035,7 @@ public partial class MainWindow
     private void DetachProjectTaskNode(TreeViewItem node)
     {
         if (_taskTree is null) return;
+        if (DetachFromParentTask(node)) return;
         foreach (var group in _taskCategoryGroups.Values)
             if (group.Items.Contains(node)) { group.Items.Remove(node); return; }
         _taskTree.Items.Remove(node);
@@ -10041,6 +10078,7 @@ public partial class MainWindow
                     for (int i = ordered.Length - 1; i > editingIndex; i--) MoveTaskNodeIntoPosition(group, ordered[i], i);
                 }
                 else for (int i = 0; i < ordered.Length; i++) MoveTaskNodeIntoPosition(group, ordered[i], i);
+                OrderSubTaskNodes();
                 int count = group.Items.Count;
                 if (_taskOrderCountLabel is not null) _taskOrderCountLabel.Text = count.ToString(System.Globalization.CultureInfo.CurrentCulture);
                 System.Windows.Automation.AutomationProperties.SetName(group, $"태스크 목록 · {count}");
@@ -10060,7 +10098,8 @@ public partial class MainWindow
     {
         if (_planTaskPicker is not null) _planTaskPicker.Visibility = _planWorkMode ? Visibility.Visible : Visibility.Collapsed;
         foreach (var (project, row) in _projectTaskRows)
-            row.Node.Visibility = !_planWorkMode || DirectoriesEqual(_selectedProjectPath, project) ? Visibility.Visible : Visibility.Collapsed;
+            row.Node.Visibility = !_planWorkMode || DirectoriesEqual(_selectedProjectPath, project) ||
+                _selectedProjectPath is { } chosen && DirectoriesEqual(ParentTaskOf(chosen), project) ? Visibility.Visible : Visibility.Collapsed;
         if (_planEmptyHint is not null)
             _planEmptyHint.Visibility = _planWorkMode && !_projectTaskRows.Keys.Any(project => DirectoriesEqual(_selectedProjectPath, project))
                 ? Visibility.Visible : Visibility.Collapsed;
@@ -14967,6 +15006,8 @@ public partial class MainWindow : Window
         LoadDocumentBindings(settings?.DocumentBindings);
         LoadProjectNames(settings?.ProjectNames);
         foreach (string excluded in settings?.ExcludedTaskProjects ?? []) _excludedTaskProjects.Add(CanonicalProjectPath(excluded));
+        foreach (string parent in settings?.SubTaskParentsOff ?? []) _subTaskParentsOff.Add(CanonicalProjectPath(parent));
+        foreach (string folder in settings?.SubTaskFolders ?? []) _subTaskFolders.Add(CanonicalProjectPath(folder));
         if (settings?.ProjectTaskMultiModes is { } modes)
             foreach (var (project, multi) in modes) _projectTaskMultiModes[CanonicalProjectPath(project)] = false;
         if (!string.IsNullOrWhiteSpace(settings?.SelectedProject))
@@ -15716,6 +15757,8 @@ public partial class MainWindow : Window
                 BasicExcludedProjects = _basicWorkspacePath is null
                     ? _settings?.BasicExcludedProjects : _basicExcludedProjects.ToArray(),
                 ExcludedTaskProjects = _windowInitialized ? _excludedTaskProjects.ToArray() : _settings?.ExcludedTaskProjects,
+                SubTaskParentsOff = _windowInitialized ? _subTaskParentsOff.ToArray() : _settings?.SubTaskParentsOff,
+                SubTaskFolders = _windowInitialized ? _subTaskFolders.ToArray() : _settings?.SubTaskFolders,
                 TerminalAgents = _terminalAgents.Select(agent => agent.ToString()).ToArray(),
                 TaskAgents = _windowInitialized ? TaskAgentsForSettings() : _settings?.TaskAgents,
                 TaskOrder = _windowInitialized ? _taskOrder.ToArray() : _settings?.TaskOrder };
@@ -16037,6 +16080,7 @@ public partial class MainWindow : Window
             !Path.GetFileName(path).StartsWith('.') &&
             !string.Equals(Path.GetFileName(path), "terminal-notes", StringComparison.OrdinalIgnoreCase) &&
             !string.Equals(Path.GetFileName(path), ProjectArchiveService.FolderName, StringComparison.OrdinalIgnoreCase) &&
+            !NeverTaskFolders.Contains(Path.GetFileName(path), StringComparer.OrdinalIgnoreCase) &&
             (File.GetAttributes(path) & (FileAttributes.ReparsePoint | FileAttributes.Hidden | FileAttributes.System)) == 0)
         : [];
 
@@ -16587,7 +16631,7 @@ public partial class MainWindow : Window
         public long ManualSubmissionConfirmationBaseline { get; set; }
         public long ManualSubmissionGeneration { get; set; }
     }
-    private sealed record Settings(string Workspace, string? Document, double Width = 1480, double Height = 920, string? CodexWorkspace = null, TerminalLaunchProfile[]? TerminalProfiles = null, int LaunchDefaultsVersion = 0, ProjectDocumentBinding[]? DocumentBindings = null, int WorkspaceDefaultsVersion = 0, ProjectNameBinding[]? ProjectNames = null, bool? UseAutoMode = null, bool SetupCompleted = false, string OpenCodeOnly = "Y", string? SelectedProject = null, bool AutoResumeEnabled = true, Dictionary<string, bool>? ProjectTaskMultiModes = null, bool TaskSidebarCollapsed = false, double TaskSidebarWidth = TaskSidebarDefaultWidth, bool TaskNotificationsEnabled = true, DateTimeOffset? TaskNotificationsSnoozedUntilUtc = null, ProjectCategoryWorkspaceState[]? ProjectTaskCategories = null, double? TaskPlanWidth = null, string? WorkMode = null, int AdvancedTerminalCapacity = 1, string? BasicSelectedFolder = null, string[]? BasicProjects = null, string[]? BasicExcludedProjects = null, string[]? ExcludedTaskProjects = null, string[]? TerminalAgents = null, Dictionary<string, string>? TaskAgents = null, string[]? TaskOrder = null);
+    private sealed record Settings(string Workspace, string? Document, double Width = 1480, double Height = 920, string? CodexWorkspace = null, TerminalLaunchProfile[]? TerminalProfiles = null, int LaunchDefaultsVersion = 0, ProjectDocumentBinding[]? DocumentBindings = null, int WorkspaceDefaultsVersion = 0, ProjectNameBinding[]? ProjectNames = null, bool? UseAutoMode = null, bool SetupCompleted = false, string OpenCodeOnly = "Y", string? SelectedProject = null, bool AutoResumeEnabled = true, Dictionary<string, bool>? ProjectTaskMultiModes = null, bool TaskSidebarCollapsed = false, double TaskSidebarWidth = TaskSidebarDefaultWidth, bool TaskNotificationsEnabled = true, DateTimeOffset? TaskNotificationsSnoozedUntilUtc = null, ProjectCategoryWorkspaceState[]? ProjectTaskCategories = null, double? TaskPlanWidth = null, string? WorkMode = null, int AdvancedTerminalCapacity = 1, string? BasicSelectedFolder = null, string[]? BasicProjects = null, string[]? BasicExcludedProjects = null, string[]? ExcludedTaskProjects = null, string[]? TerminalAgents = null, Dictionary<string, string>? TaskAgents = null, string[]? TaskOrder = null, string[]? SubTaskParentsOff = null, string[]? SubTaskFolders = null);
     private static void ApplyDarkTitleBar(Window window)
     {
         if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 17763)) return;
