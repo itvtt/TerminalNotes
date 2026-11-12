@@ -541,7 +541,6 @@
                 Background="Transparent" WindowChrome.IsHitTestVisibleInChrome="True" AutomationProperties.Name="PC 사용률">
      <TextBlock x:Name="SystemMeterCpu" FontSize="12" MinWidth="58" VerticalAlignment="Center" Foreground="{StaticResource TextSecondary}"/>
      <TextBlock x:Name="SystemMeterGpu" FontSize="12" MinWidth="58" Margin="10,0,0,0" VerticalAlignment="Center" Foreground="{StaticResource TextSecondary}" Visibility="Collapsed"/>
-     <TextBlock x:Name="SystemMeterNpu" FontSize="12" MinWidth="58" Margin="10,0,0,0" VerticalAlignment="Center" Foreground="{StaticResource TextSecondary}" Visibility="Collapsed"/>
      <TextBlock x:Name="SystemMeterMemory" FontSize="12" MinWidth="72" Margin="10,0,0,0" VerticalAlignment="Center" Foreground="{StaticResource TextSecondary}"/>
     </StackPanel>
    </StackPanel>
