@@ -108,6 +108,40 @@ internal static class Program
             string? row = rows.Children.OfType<Button>().Select(AutomationProperties.GetName).FirstOrDefault();
             Assert(row is not null && row.StartsWith("01 ", StringComparison.Ordinal) && row.Contains(" · ", StringComparison.Ordinal), "a row names the terminal and its state: " + row);
             Console.WriteLine("summary: " + window.AgentBoardSummary + " | row: " + row);
+
+            // + 터미널: a real PowerShell window running OpenCode in auto mode with the app's instructions; the board finds it.
+            var started = new List<System.Diagnostics.Process>();
+            var starts = new List<System.Diagnostics.ProcessStartInfo>();
+            typeof(MainWindow).GetField("StartExternalWindow", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window,
+                (Action<System.Diagnostics.ProcessStartInfo>)(info => { starts.Add(info); if (System.Diagnostics.Process.Start(info) is { } process) started.Add(process); }));
+            try
+            {
+                ((Button)window.FindName("NewTerminalButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                for (int i = 0; i < 100 && starts.Count == 0; i++) await Task.Delay(200);
+                Assert(starts.Count == 1, "+ 터미널 starts one window");
+                if (starts.Count == 1)
+                {
+                    string config = starts[0].Environment["OPENCODE_CONFIG_CONTENT"]!;
+                    using var parsed = System.Text.Json.JsonDocument.Parse(config);
+                    string instructions = parsed.RootElement.GetProperty("instructions")[0].GetString()!;
+                    Console.WriteLine($"+ 터미널: {starts[0].FileName} {string.Join(" ", starts[0].ArgumentList)} · permission {parsed.RootElement.GetProperty("permission")}");
+                    Assert(starts[0].ArgumentList.Last().Contains("opencode", StringComparison.OrdinalIgnoreCase), "the window runs OpenCode");
+                    Assert(parsed.RootElement.GetProperty("permission").ToString().Contains("allow", StringComparison.Ordinal), "in auto mode (tools allowed)");
+                    Assert(File.Exists(instructions), "with the app's instructions file");
+                    ExternalAgents.Agent? opencode = null;
+                    for (int i = 0; i < 30 && opencode is null; i++)
+                    {
+                        await Task.Delay(1000);
+                        opencode = ExternalAgents.Scan(new HashSet<int>()).FirstOrDefault(agent => agent.Name == "OpenCode");
+                    }
+                    Console.WriteLine($"board sees: {opencode?.Name} in {opencode?.Host}");
+                    Assert(opencode is not null, "OpenCode really runs in that window, and the board finds it among the other terminals");
+                }
+            }
+            finally
+            {
+                foreach (var process in started) try { process.Kill(entireProcessTree: true); } catch { }
+            }
             string shots = Path.Combine(Path.GetTempPath(), "TerminalNotes.AgentBoard");
             Directory.CreateDirectory(shots);
             Save((FrameworkElement)window.FindName("TerminalAreaHeader"), Path.Combine(shots, "header.png"));

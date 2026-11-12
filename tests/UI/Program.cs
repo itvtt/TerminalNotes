@@ -456,10 +456,15 @@ internal static class Program
                 "original pane receives WebView keyboard focus");
             // Ctrl+Shift+T and + 터미널 open a separate PowerShell window (recorded here); the in-app pane comes from CreateProfileTerminal.
             var launchedPowerShell=new List<string>();
-            window.GetType().GetField("LaunchPowerShellWindow",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(window,(Action<string>)(directory=>launchedPowerShell.Add(directory)));
+            var launchedStarts=new List<System.Diagnostics.ProcessStartInfo>();
+            window.GetType().GetField("StartExternalWindow",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(window,(Action<System.Diagnostics.ProcessStartInfo>)(info=>{launchedStarts.Add(info);launchedPowerShell.Add(info.WorkingDirectory);}));
             await SendBrowserCtrlShiftTAsync(ownerBrowser);
             await Until(()=>Task.FromResult(launchedPowerShell.Count==1),"Ctrl+Shift+T opens a PowerShell window");
             Assert(string.Equals(launchedPowerShell[0],ownerPane.WorkingDirectory,StringComparison.OrdinalIgnoreCase),"the PowerShell window opens in the focused pane's folder");
+            Assert(launchedStarts[0].ArgumentList.Last().Contains("opencode",StringComparison.OrdinalIgnoreCase)&&
+                launchedStarts[0].Environment["OPENCODE_CONFIG_CONTENT"]!.Contains("\"permission\"",StringComparison.Ordinal)&&
+                launchedStarts[0].Environment["OPENCODE_CONFIG_CONTENT"]!.Contains("instructions",StringComparison.Ordinal),
+                "the window runs OpenCode in auto mode with the app's instructions");
             Call(window,"CreateProfileTerminal",ownerPane);
             await Until(()=>Task.FromResult(tabs.Items.Count>originalCount),"Ctrl+Shift+T adds an independent terminal");
             extras.AddRange(tabs.Items.Cast<TabItem>().Where(tab=>!ReferenceEquals(tab,ownerTab)));

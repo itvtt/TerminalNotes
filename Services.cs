@@ -10560,7 +10560,7 @@ public sealed class OpenCodeHeadlessHost : IDisposable
         }
     }
 
-    private static string MergeAutoPermission(string? configContent)
+    internal static string MergeAutoPermission(string? configContent)
     {
         JsonObject config;
         if (string.IsNullOrWhiteSpace(configContent)) config = new JsonObject();

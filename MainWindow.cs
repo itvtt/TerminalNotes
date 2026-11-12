@@ -5219,11 +5219,14 @@ public partial class MainWindow
 
     // + 터미널 · Ctrl+Shift+T: a separate PowerShell window in the work folder, not a terminal inside Terminal Notes
     // (2026-11-11 사용자: "+터미널 하면 터미널노트에 추가하지말고 그냥 파워쉘로 해서 띄우게해"). Tests replace the launch.
-    internal Action<string> LaunchPowerShellWindow = directory =>
-        global::System.Diagnostics.Process.Start(new global::System.Diagnostics.ProcessStartInfo("powershell.exe", "-NoLogo -NoExit")
-        { WorkingDirectory = directory, UseShellExecute = true })?.Dispose();
+    /// <summary>Starts the external window (tests record it instead).</summary>
+    internal Action<global::System.Diagnostics.ProcessStartInfo> StartExternalWindow = info => global::System.Diagnostics.Process.Start(info)?.Dispose();
 
-    private void OpenPowerShellWindow(TerminalPane? source = null)
+    // + 터미널 and Ctrl+Shift+T (2026-11-12 사용자: "+터미널 버튼을 누르면 파워쉘만 열리는게 아니고 오픈코드 오토 모드로 열리게 해야지"): a
+    // PowerShell window running OpenCode in auto mode (every tool allowed, like the app's auto mode) in the focused terminal's or the
+    // selected task's folder, with the app's instructions (the task's plan and the global instructions) like the app's own terminals.
+    // The window is OpenCode's own: closing it ends OpenCode; the board shows it among the other terminals.
+    private async void OpenOpenCodeWindow(TerminalPane? source = null)
     {
         if (_closing || _closePending) return;
         string directory = source?.WorkingDirectory ?? ActiveTerminal?.WorkingDirectory ?? CurrentProjectPath;
@@ -5231,13 +5234,49 @@ public partial class MainWindow
             directory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         try
         {
-            LaunchPowerShellWindow(directory);
-            SetStatus("PowerShell 창을 열었습니다 · " + directory);
+            AutoInstallDetectionResult installed;
+            using (var check = new CancellationTokenSource(TimeSpan.FromSeconds(20))) installed = await AutoInstall.CheckAsync(check.Token);
+            if (!installed.IsInstalled || string.IsNullOrWhiteSpace(installed.Path))
+            {
+                SetAttentionStatus("OpenCode를 찾을 수 없어 창을 열지 못했습니다 · " + installed.Message);
+                return;
+            }
+            string name = ProjectDisplayName(directory);
+            StartExternalWindow(OpenCodeWindowStart(directory, installed.Path, name, OpenCodeWindowConfig(directory, name)));
+            SetStatus("OpenCode 창을 열었습니다 · 오토 모드 · " + name);
         }
-        catch (Exception exception) when (exception is global::System.ComponentModel.Win32Exception or InvalidOperationException or IOException)
+        catch (Exception exception) when (exception is global::System.ComponentModel.Win32Exception or InvalidOperationException or IOException or OperationCanceledException or UnauthorizedAccessException)
         {
-            SetAttentionStatus("PowerShell 창을 열지 못했습니다 · " + exception.Message);
+            SetAttentionStatus("OpenCode 창을 열지 못했습니다 · " + exception.Message);
         }
+    }
+
+    /// <summary>The app's instructions for that folder (its task plan, when it is a task, and the global instructions) and auto mode.</summary>
+    private string OpenCodeWindowConfig(string directory, string name)
+    {
+        // The instruction file stays for the window's lifetime (the app does not see it close): old ones are cleared now and then.
+        try
+        {
+            string folder = Path.Combine(OpenCodeProjectContext.DataDirectory, "OpenCodeProjectContext");
+            if (Directory.Exists(folder))
+                foreach (var old in new DirectoryInfo(folder).EnumerateFiles("*.md").Where(file => file.LastWriteTimeUtc < DateTime.UtcNow.AddDays(-14)))
+                    try { old.Delete(); } catch (IOException) { }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { }
+        string plan = DefaultProjectPlanPath(directory);
+        var context = new OpenCodeProjectContext(directory, File.Exists(plan) ? plan : null, name);
+        return OpenCodeHeadlessHost.MergeAutoPermission(context.CreateProcessConfigContent(Environment.GetEnvironmentVariable("OPENCODE_CONFIG_CONTENT")));
+    }
+
+    internal static global::System.Diagnostics.ProcessStartInfo OpenCodeWindowStart(string directory, string opencode, string name, string config)
+    {
+        var info = new global::System.Diagnostics.ProcessStartInfo("powershell.exe") { WorkingDirectory = directory, UseShellExecute = false, CreateNoWindow = false };
+        info.ArgumentList.Add("-NoLogo");
+        info.ArgumentList.Add("-NoExit");
+        info.ArgumentList.Add("-Command");
+        info.ArgumentList.Add($"$Host.UI.RawUI.WindowTitle = 'OpenCode · {name.Replace("'", "''")} · 오토'; & '{opencode.Replace("'", "''")}'");
+        info.Environment["OPENCODE_CONFIG_CONTENT"] = config;
+        return info;
     }
 
     private void TerminalProfiles_Click(object sender, RoutedEventArgs e)
@@ -15306,7 +15345,7 @@ public partial class MainWindow : Window
         Activate();
         _ = Dispatcher.BeginInvoke(() => FocusTerminalUnlessEditing(ActiveTerminal), DispatcherPriority.Background);
     }
-    private void NewTerminal_Click(object sender, RoutedEventArgs e) => OpenPowerShellWindow();
+    private void NewTerminal_Click(object sender, RoutedEventArgs e) => OpenOpenCodeWindow();
     internal bool ActivateFromLauncher(string? project)
     {
         if (_closing || _closePending) return false;
@@ -15609,7 +15648,7 @@ public partial class MainWindow : Window
             if (shift && key == "t") StartBasicTerminal();
             return;
         }
-        switch (key) { case "t" when shift: OpenPowerShellWindow(source); break; case "m" when shift: ToggleNotes(); break; }
+        switch (key) { case "t" when shift: OpenOpenCodeWindow(source); break; case "m" when shift: ToggleNotes(); break; }
     }
     private void SetStatus(string message) => SetStatusCore(message, reopenDuplicate: true);
     private void SetProgressStatus(string message) => SetStatusCore(message, reopenDuplicate: false);
