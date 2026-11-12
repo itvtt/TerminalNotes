@@ -157,6 +157,8 @@ public partial class MainWindow
         {
             _leftoversStopped = true;
             StopLeftoverServers();
+            // Once per boot: why the PC went down last time, when it was not the user's own shutdown.
+            ReportPreviousShutdown();
         }
         var tabs = TerminalTabs.Items.Cast<TabItem>().ToArray();
         var panes = tabs.Select(tab => ((TerminalTabState)tab.Tag).Pane).ToHashSet();

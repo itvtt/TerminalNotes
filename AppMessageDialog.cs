@@ -18,7 +18,19 @@ internal static class AppMessageDialog
     internal static void ShowError(Window owner, string title, string message) =>
         Create(owner, title, message, "확인", confirmation: false).ShowDialog();
 
-    private static Window Create(Window owner, string title, string message, string confirmText, bool confirmation)
+    /// <summary>A confirmation with one more choice left of the main one: true main, false the other, null cancel.</summary>
+    internal static bool? ConfirmOr(Window owner, string title, string message, string confirmText, string otherText)
+    {
+        bool other = false;
+        var window = Build(owner, title, message, confirmText, confirmation: true, otherText, () => other = true);
+        return window.ShowDialog() == true ? true : other ? false : null;
+    }
+
+    private static Window Create(Window owner, string title, string message, string confirmText, bool confirmation) =>
+        Build(owner, title, message, confirmText, confirmation, null, null);
+
+    private static Window Build(Window owner, string title, string message, string confirmText, bool confirmation,
+        string? otherText, Action? otherPicked)
     {
         var window = new Window
         {
@@ -55,6 +67,11 @@ internal static class AppMessageDialog
             AutomationProperties.SetAutomationId(button, id);
             actions.Children.Add(button);
             return button;
+        }
+        if (otherText is not null)
+        {
+            var other = MakeButton(otherText, "AppMessageOther");
+            other.Click += (_, _) => { otherPicked?.Invoke(); window.DialogResult = false; };
         }
         var accept = MakeButton(confirmText, "AppMessageConfirm");
         accept.Click += (_, _) => window.DialogResult = true;

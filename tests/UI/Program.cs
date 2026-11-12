@@ -699,7 +699,13 @@ internal static class Program
         }
         if(Environment.GetEnvironmentVariable("TERMINALNOTES_UI_NOTIFICATIONS_ONLY")=="1")
         {
-            try { RunTaskNotificationOptionsSmoke(fixture); Console.WriteLine("UI TASK NOTIFICATION SMOKE PASSED"); }
+            try
+            {
+                // First: closing the notification smoke's window asks the app to exit, which would end a later async smoke.
+                await RunPreviousShutdownSmoke(fixture);
+                RunTaskNotificationOptionsSmoke(fixture);
+                Console.WriteLine("UI TASK NOTIFICATION SMOKE PASSED");
+            }
             catch(Exception ex) { _fail=1; Console.WriteLine("FAIL "+ex); }
             finally { app.Shutdown(); Console.WriteLine("Fixture: "+fixture); }
             return;
@@ -732,7 +738,13 @@ internal static class Program
         }
         if(Environment.GetEnvironmentVariable("TERMINALNOTES_UI_CLEANUP_WINDOWS_ONLY")=="1")
         {
-            try { await RunConcurrentPlanCleanupSmoke(fixture); Console.WriteLine("UI CONCURRENT PLAN CLEANUP SMOKE PASSED"); }
+            try
+            {
+                await RunConcurrentPlanCleanupSmoke(fixture);
+                await RunPlanPartsConcurrentlySmoke(fixture);
+                await RunScheduledPlanCleanupSmoke(fixture);
+                Console.WriteLine("UI CONCURRENT PLAN CLEANUP SMOKE PASSED");
+            }
             catch(Exception ex) { _fail=1; Console.WriteLine("FAIL "+ex); }
             finally { app.Shutdown(); Console.WriteLine("Fixture: "+fixture); }
             return;
@@ -2968,12 +2980,21 @@ internal static class Program
             bool sawWindow = false;
             var ended = new TaskCompletionSource();
             // The modal window runs its own message loop inside OrganizeProjectPlan, so this watcher starts first and runs in it.
+            // TERMINALNOTES_UI_LIVE_CLEANUP_TRAY=1: the plan is saved, the window goes to the tray (hidden), and the scheduled
+            // cleanup runs the way it does at night: its own terminal must start without the main window on screen.
+            bool tray = Environment.GetEnvironmentVariable("TERMINALNOTES_UI_LIVE_CLEANUP_TRAY") == "1";
+            if (tray)
+            {
+                await (Task)Call(window, "SaveTabDocumentAsync", false)!;
+                window.Hide();
+            }
             var watcher = Watch();
-            var organizing = (Task)window.GetType().GetMethod("OrganizeProjectPlan", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, null)!;
+            var organizing = tray ? (Task)Call(window, "RunScheduledPlanCleanupAsync", project)! :
+                (Task)window.GetType().GetMethod("OrganizeProjectPlan", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, null)!;
             await organizing;
             ended.TrySetResult();
             await watcher;
-            Assert(sawWindow, "the plan cleanup runs in its own modal window");
+            Assert(tray ? !sawWindow : sawWindow, tray ? "from the tray the cleanup runs without its window" : "the plan cleanup runs in its own modal window");
             Console.WriteLine("STATUS: " + Status());
             Console.WriteLine("RESULT:\n" + document.Text);
             return;
@@ -3078,6 +3099,277 @@ internal static class Program
             Call(window, "DisposeResources");
             window.Close();
         }
+    }
+
+    // 2026-11-12 사용자: "퀄리티좋은 선에서 빠르게 해". A long plan's parts are asked at the same time (three requests at most),
+    // each part still checked as before; answers in any order give the plan in its own order, then one pass over the whole. Fake model.
+    private static async Task RunPlanPartsConcurrentlySmoke(string fixture)
+    {
+        string workspace = Path.Combine(fixture, "parts-workspace"), project = Path.Combine(workspace, "long");
+        Directory.CreateDirectory(project);
+        string settings = Path.Combine(fixture, "parts-settings.json");
+        File.WriteAllText(settings, JsonSerializer.Serialize(new { Workspace = workspace, SetupCompleted = true }));
+        var window = new MainWindow(settings, autoStartCodex: false, initialWorkspace: workspace);
+        window.ShowActivated = false;
+        window.Show();
+        var pending = new List<(string Prompt, TaskCompletionSource<string> Answer)>();
+        int inFlight = 0, peak = 0;
+        try
+        {
+            static void SetPrivate(object target, string name, object? value) =>
+                target.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(target, value);
+            SetPrivate(window, "OrganizePlanConfirmationOverride", (Func<bool>)(() => true));
+            SetPrivate(window, "PlanCondenseOverride", (Func<string, CancellationToken, Task<string>>)(async (prompt, _) =>
+            {
+                var answer = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+                lock (pending) pending.Add((prompt, answer));
+                peak = Math.Max(peak, Interlocked.Increment(ref inFlight));
+                try { return await answer.Task; }
+                finally { Interlocked.Decrement(ref inFlight); }
+            }));
+            static string Letters(int value) => new([(char)('a' + value / 26 % 26), (char)('a' + value % 26)]);
+            // No digits, paths or code: nothing the value check can miss, so each part takes exactly one request.
+            // Eight sections of ~2,900 characters pack into four parts of at most 6,000.
+            static string Section(int part) => $"## Part {Letters(part)}\n" + string.Join("\n", Enumerable.Range(0, 44).Select(line =>
+                $"- item {Letters(part)}{Letters(line)} keeps the very same meaning in a much longer sentence"));
+            string plan = "# Long plan\n\n" + string.Join("\n\n", Enumerable.Range(0, 8).Select(Section));
+            // The model's cleanup: the headings and the first item under each.
+            static string Cleaned(string prompt)
+            {
+                const string marker = "정리할 플랜:\n";
+                var kept = new List<string>();
+                bool takeItem = false;
+                foreach (string line in prompt[(prompt.LastIndexOf(marker, StringComparison.Ordinal) + marker.Length)..].Split('\n'))
+                {
+                    if (line.StartsWith('#')) { kept.Add(line); takeItem = true; }
+                    else if (takeItem && line.StartsWith("- ", StringComparison.Ordinal)) { kept.Add(line); takeItem = false; }
+                }
+                return "<<<TERMINALNOTES_PLAN>>>\n" + string.Join("\n", kept) + "\n<<<END_TERMINALNOTES_PLAN>>>";
+            }
+            int Count() { lock (pending) return pending.Count; }
+            void Answer(int index) { lock (pending) pending[index].Answer.SetResult(Cleaned(pending[index].Prompt)); }
+
+            var document = Field<TextBox>(window, "_tabDocumentEditor");
+            Call(window, "SelectTaskProject", project, true);
+            await Until(() => Task.FromResult(document.IsEnabled), "long plan document");
+            document.Text = plan;
+            var organizing = (Task)window.GetType().GetMethod("OrganizeProjectPlan", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, null)!;
+            await Until(() => Task.FromResult(Count() == 3), "three parts asked at once");
+            await Task.Delay(400);
+            Assert(Count() == 3 && Volatile.Read(ref inFlight) == 3, "a long plan's parts are asked at the same time, three at most");
+            var cleanup = window.OwnedWindows.Cast<Window>().Single(owned => owned.GetType().Name == "PlanCleanupDialog");
+            string Phase() => ((TextBlock)cleanup.GetType().GetField("_phase", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(cleanup)!).Text;
+            await Until(() => Task.FromResult(Phase().Contains("부분 3개를 동시에", StringComparison.Ordinal)), "the window says parts run at once");
+            // The last part asked answers first: the fourth part starts in its place.
+            Answer(2);
+            await Until(() => Task.FromResult(Count() == 4), "the fourth part starts when one finishes");
+            Answer(0);
+            Answer(3);
+            Answer(1);
+            await Until(() => Task.FromResult(Count() == 5), "the whole plan is regrouped after the parts");
+            string regroup;
+            lock (pending) regroup = pending[4].Prompt;
+            Assert(peak == 3 && regroup.Contains("## Part aa", StringComparison.Ordinal) && regroup.Contains("## Part ah", StringComparison.Ordinal),
+                "four parts, never more than three requests at once, then one request over the whole plan" + $" (peak={peak})");
+            Answer(4);
+            await organizing;
+            int[] order = Enumerable.Range(0, 8).Select(part => document.Text.IndexOf("## Part " + Letters(part), StringComparison.Ordinal)).ToArray();
+            Assert(order.All(at => at >= 0) && order.Zip(order.Skip(1)).All(pair => pair.First < pair.Second) && document.Text.Length < plan.Length / 4,
+                "answers in any order give the cleaned plan in plan order" + $" (draft={document.Text.ReplaceLineEndings("⏎")})");
+            Assert(cleanup.GetType().GetProperty("IsFinished", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(cleanup) is true,
+                "the cleanup window shows the outcome");
+            cleanup.Close();
+        }
+        finally
+        {
+            lock (pending) foreach (var item in pending) item.Answer.TrySetResult("");
+            Call(window, "DisposeResources");
+            window.Close();
+        }
+    }
+
+    // 2026-11-12 사용자: "플랜정리도 시간 예약을 걸어두게 할 수 있나?". 플랜 정리 → 예약… → a time; the button shows it; at that time
+    // the plan is cleaned and saved (the plan before kept); an unsaved draft is never cleaned behind the user's back; a time missed
+    // while the app was closed is reported, not run. Fake model; the two windows are saved as pictures for a look.
+    private static async Task RunScheduledPlanCleanupSmoke(string fixture)
+    {
+        string workspace = Path.Combine(fixture, "scheduled-workspace"), project = Path.Combine(workspace, "nightly");
+        Directory.CreateDirectory(project);
+        string settings = Path.Combine(fixture, "scheduled-settings.json");
+        File.WriteAllText(settings, JsonSerializer.Serialize(new { Workspace = workspace, SetupCompleted = true }));
+        var window = new MainWindow(settings, autoStartCodex: false, initialWorkspace: workspace);
+        window.ShowActivated = false;
+        window.Show();
+        int calls = 0;
+        try
+        {
+            static void SetPrivate(object target, string name, object? value) =>
+                target.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(target, value);
+            const string wordy = "# Nightly\n\n## UI\n- 화면을 꼭 빠르게 만들어 주세요 정말로요.\n- 화면을 꼭 빠르게 만들어 주세요 정말로요.\n";
+            const string concise = "# Nightly\n\n## 화면\n- 빠른 화면";
+            SetPrivate(window, "PlanCondenseOverride", (Func<string, CancellationToken, Task<string>>)((_, _) =>
+            {
+                calls++;
+                return Task.FromResult("<<<TERMINALNOTES_PLAN>>>\n" + concise + "\n<<<END_TERMINALNOTES_PLAN>>>");
+            }));
+            string Status() => ((TextBlock)window.FindName("StatusLabel")).Text;
+            DateTimeOffset? Scheduled() => (DateTimeOffset?)Call(window, "PlanCleanupScheduleFor", project);
+            var document = Field<TextBox>(window, "_tabDocumentEditor");
+            var button = Field<Button>(window, "_organizePlanButton");
+            Call(window, "SelectTaskProject", project, true);
+            await Until(() => Task.FromResult(document.IsEnabled), "nightly plan document");
+            document.Text = wordy;
+            await (Task)Call(window, "SaveTabDocumentAsync", false)!;
+            string planPath = Path.Combine(project, "terminal-notes", "plan.md");
+            string saved = File.ReadAllText(planPath);
+
+            // 플랜 정리 → 예약… → 새벽 2시 → 예약, through the real windows.
+            string confirmPicture = Path.Combine(fixture, "plan-cleanup-confirm.png"), schedulePicture = Path.Combine(fixture, "plan-cleanup-schedule.png");
+            int stage = 0;
+            var driver = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
+            driver.Tick += (_, _) =>
+            {
+                var open = Application.Current.Windows.Cast<Window>().Where(other => other.IsVisible && other.IsLoaded && !ReferenceEquals(other, window)).ToArray();
+                if (stage == 0 && open.FirstOrDefault(other => System.Windows.Automation.AutomationProperties.GetAutomationId(other) == "AppMessageDialog") is { } confirm)
+                {
+                    SaveWholeWindow(confirm, confirmPicture);
+                    Descendants<Button>(confirm).Single(item => System.Windows.Automation.AutomationProperties.GetAutomationId(item) == "AppMessageOther")
+                        .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    stage = 1;
+                }
+                else if (stage == 1 && open.FirstOrDefault(other => other.Title == "플랜 정리 예약") is { } dialog)
+                {
+                    Descendants<Button>(dialog).Single(item => item.Content as string == "새벽 2시").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    dialog.UpdateLayout();
+                    SaveWholeWindow(dialog, schedulePicture);
+                    Descendants<Button>(dialog).Single(item => System.Windows.Automation.AutomationProperties.GetAutomationId(item) == "PlanCleanupScheduleApply")
+                        .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    stage = 2;
+                }
+            };
+            driver.Start();
+            try { await (Task)Call(window, "OrganizeProjectPlan")!; }
+            finally { driver.Stop(); }
+            var at = Scheduled();
+            Assert(stage == 2 && calls == 0 && at is { } when && when.LocalDateTime.Hour == 2 && when > DateTimeOffset.Now &&
+                File.Exists(Path.Combine(fixture, "app-data", "plan-cleanup-schedules.json")),
+                "플랜 정리 → 예약… sets a time (새벽 2시) and keeps it, without cleaning now" + $" (stage={stage}, at={at})");
+            // The next 02:00 is always within a day: the time alone.
+            Assert(button.Content as string == "정리 예약 02:00", "the 플랜 정리 button shows the set time" + $" ({button.Content})");
+            window.UpdateLayout();
+            string buttonPicture = Path.Combine(fixture, "plan-cleanup-button.png");
+            if (button.Parent is FrameworkElement actions)
+            {
+                var visual = new System.Windows.Media.DrawingVisual();
+                using (var context = visual.RenderOpen())
+                {
+                    var area = new System.Windows.Rect(0, 0, actions.ActualWidth + 16, actions.ActualHeight + 16);
+                    context.DrawRectangle(new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x16, 0x16, 0x16)), null, area);
+                    context.DrawRectangle(new System.Windows.Media.VisualBrush(actions), null, new System.Windows.Rect(8, 8, actions.ActualWidth, actions.ActualHeight));
+                }
+                var bitmap = new System.Windows.Media.Imaging.RenderTargetBitmap((int)Math.Ceiling(actions.ActualWidth + 16), (int)Math.Ceiling(actions.ActualHeight + 16),
+                    96, 96, System.Windows.Media.PixelFormats.Pbgra32);
+                bitmap.Render(visual);
+                var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
+                encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bitmap));
+                using var stream = File.Create(buttonPicture);
+                encoder.Save(stream);
+            }
+            Assert((bool)Call(window, "HasWorkRequiringSystemAwake")!, "a set cleanup time keeps the PC awake");
+
+            // The time comes: cleaned, saved, the plan before kept, the time gone.
+            await (Task)Call(window, "RunScheduledPlanCleanupAsync", project)!;
+            string before = Path.Combine(project, "terminal-notes", "plan.before-cleanup.md");
+            Assert(calls == 1 && File.ReadAllText(planPath).Trim() == concise && File.Exists(before) && File.ReadAllText(before) == saved &&
+                Scheduled() is null && button.Content as string == "플랜 정리",
+                "at the set time the plan is cleaned and saved, the plan before is kept, and the time is cleared" +
+                $" (calls={calls}, plan={File.ReadAllText(planPath).ReplaceLineEndings("⏎")}, status={Status()})");
+
+            // An unsaved draft is not cleaned (nor saved) behind the user's back.
+            Call(window, "SetPlanCleanupSchedule", project, (DateTimeOffset?)DateTimeOffset.Now.AddHours(1));
+            document.Text = concise + "\n- 아직 저장 안 한 줄";
+            string onDisk = File.ReadAllText(planPath);
+            await (Task)Call(window, "RunScheduledPlanCleanupAsync", project)!;
+            Assert(calls == 1 && File.ReadAllText(planPath) == onDisk && document.Text.Contains("아직 저장 안 한 줄", StringComparison.Ordinal) &&
+                Status().Contains("저장하지 않은 플랜 초안이 있어", StringComparison.Ordinal) && Scheduled() is null,
+                "an unsaved draft skips the cleanup and says why" + $" (status={Status()})");
+            document.Text = onDisk;
+
+            // A time missed while the app was closed is reported, not run late.
+            Call(window, "SetPlanCleanupSchedule", project, (DateTimeOffset?)DateTimeOffset.Now.AddHours(-3));
+            SetPrivate(window, "_planCleanupSchedulesLoadedAt", DateTimeOffset.Now);
+            Call(window, "RunDuePlanCleanupSchedules");
+            await Task.Delay(300);
+            Assert(calls == 1 && Scheduled() is null && Status().Contains("하지 못했습니다", StringComparison.Ordinal),
+                "a cleanup time missed while the app was closed is reported, not run" + $" (status={Status()})");
+            Console.WriteLine("PICTURES: " + confirmPicture + " | " + schedulePicture + " | " + buttonPicture);
+        }
+        finally
+        {
+            Call(window, "DisposeResources");
+            window.Close();
+        }
+    }
+
+    // 2026-11-12 사용자: "다음날 와보면 PC가 꺼져있는 경우가 있어". The app itself (not a test window) checks once per boot why the PC went
+    // down before this boot and says it when it was not the user's own shutdown; a second start in the same boot says nothing again.
+    private static async Task RunPreviousShutdownSmoke(string fixture)
+    {
+        string marker = Path.Combine(fixture, "app-data", "shutdown-check.txt");
+        if (File.Exists(marker)) File.Delete(marker);
+        // The app's own leftover list stands for "this is the app": the start-up check runs only there.
+        AppContext.SetData("TerminalNotes.KeptServersPath", Path.Combine(fixture, "kept-servers.json"));
+        AppContext.SetData("TerminalNotes.ScheduledJobsPath", Path.Combine(fixture, "scheduled-jobs.json"));
+        string settings = Path.Combine(fixture, "shutdown-settings.json");
+        File.WriteAllText(settings, JsonSerializer.Serialize(new { Workspace = fixture, SetupCompleted = true }));
+        MainWindow? window = null;
+        try
+        {
+            window = new MainWindow(settings, autoStartCodex: false, initialWorkspace: fixture) { ShowActivated = false };
+            window.Show();
+            string Status() => ((TextBlock)window.FindName("StatusLabel")).Text;
+            await Until(() => Task.FromResult(File.Exists(marker)), "the once-per-boot shutdown check", 60);
+            await Task.Delay(1500);
+            string first = Status();
+            Console.WriteLine("SHUTDOWN NOTICE: " + first);
+            Assert(DateTime.TryParse(File.ReadAllText(marker), null, System.Globalization.DateTimeStyles.RoundtripKind, out var boot) &&
+                Math.Abs((boot - (DateTime.Now - TimeSpan.FromMilliseconds(Environment.TickCount64))).TotalMinutes) < 2,
+                "the check keeps this boot's time so it runs once per boot");
+            Assert(!first.Contains("PC 종료", StringComparison.Ordinal) || first.StartsWith("지난번 PC 종료 · ", StringComparison.Ordinal),
+                "a notice about the last shutdown is headed 지난번 PC 종료");
+            window.GetType().GetField("_shutdownChecked", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, false);
+            ((TextBlock)window.FindName("StatusLabel")).Text = "";
+            Call(window, "ReportPreviousShutdown");
+            await Task.Delay(2000);
+            Assert(!Status().Contains("지난번 PC 종료", StringComparison.Ordinal), "a second start in the same boot says nothing again" + $" (status={Status()})");
+        }
+        finally
+        {
+            AppContext.SetData("TerminalNotes.KeptServersPath", null);
+            if (window is not null) { Call(window, "DisposeResources"); window.Close(); }
+        }
+    }
+
+    // The whole window as it looks: its own background under the content.
+    private static void SaveWholeWindow(Window window, string path)
+    {
+        if (window.Content is not FrameworkElement content || content.ActualWidth < 1 || content.ActualHeight < 1) return;
+        var visual = new System.Windows.Media.DrawingVisual();
+        using (var context = visual.RenderOpen())
+        {
+            var size = new System.Windows.Rect(0, 0, content.ActualWidth + content.Margin.Left + content.Margin.Right, content.ActualHeight + content.Margin.Top + content.Margin.Bottom);
+            context.DrawRectangle(window.Background, null, size);
+            context.DrawRectangle(new System.Windows.Media.VisualBrush(content), null,
+                new System.Windows.Rect(content.Margin.Left, content.Margin.Top, content.ActualWidth, content.ActualHeight));
+        }
+        var bounds = visual.ContentBounds;
+        var bitmap = new System.Windows.Media.Imaging.RenderTargetBitmap((int)Math.Ceiling(bounds.Right), (int)Math.Ceiling(bounds.Bottom), 96, 96,
+            System.Windows.Media.PixelFormats.Pbgra32);
+        bitmap.Render(visual);
+        var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
+        encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bitmap));
+        using var stream = File.Create(path);
+        encoder.Save(stream);
     }
 
     private static void SaveWindowPicture(Window window, string path)

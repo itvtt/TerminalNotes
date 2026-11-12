@@ -9986,6 +9986,35 @@ public sealed partial class OpenCodeConversationClient
     // which OpenCode's free tier rejects as "not from within OpenCode".
     private static readonly string[] SideEffectTools = ["edit", "bash", "webfetch", "websearch", "codesearch", "task", "question", "external_directory"];
 
+    // The same server with an empty folder as the directory, for requests that need nothing of the project (the plan cleanup:
+    // its prompt holds the whole plan). OpenCode adds the AGENTS.md of a request's directory to every model call, so a long
+    // AGENTS.md went with every cleanup call (measured 2026-11-12, OpenCode 1.18.34, one-word answer: 27,220 input tokens with
+    // a 60 KB AGENTS.md, 7,882 in an empty folder). Only when that folder sees the project's own model, providers, agents and
+    // plugins, so a model set up in the project's opencode.json is never swapped; otherwise null and the caller stays in the project.
+    internal async Task<OpenCodeConversationClient?> WithoutProjectContextAsync(string emptyDirectory, CancellationToken token)
+    {
+        OpenCodeConversationClient? bare = null;
+        try
+        {
+            Directory.CreateDirectory(emptyDirectory);
+            bare = new OpenCodeConversationClient(_endpoint, emptyDirectory, _httpClient);
+            JsonElement project = await GetJsonAsync(BuildEndpoint("/config"), token).ConfigureAwait(false);
+            JsonElement other = await bare.GetJsonAsync(bare.BuildEndpoint("/config"), token).ConfigureAwait(false);
+            if (SameModelSetup(project, other)) { var result = bare; bare = null; return result; }
+            return null;
+        }
+        catch (Exception exception) when (!token.IsCancellationRequested && exception is IOException or UnauthorizedAccessException or
+            HttpRequestException or JsonException or InvalidDataException or OperationCanceledException or ArgumentException) { return null; }
+        finally { bare?.Dispose(); }
+    }
+
+    private static readonly string[] ModelSetupKeys = ["model", "small_model", "provider", "enabled_providers", "disabled_providers", "agent", "mode", "plugin"];
+
+    private static bool SameModelSetup(JsonElement project, JsonElement other) =>
+        project.ValueKind == JsonValueKind.Object && other.ValueKind == JsonValueKind.Object &&
+        ModelSetupKeys.All(key => (project.TryGetProperty(key, out var mine) ? mine.GetRawText() : "") ==
+            (other.TryGetProperty(key, out var theirs) ? theirs.GetRawText() : ""));
+
     // One bounded request in a fresh side-effect-free session; returns the assistant's text.
     // A long plan takes a long time to rewrite. The request fails only when the session is neither
     // working nor growing its answer for `idleLimit`; `timeout` is just an overall safety cap.

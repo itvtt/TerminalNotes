@@ -3222,9 +3222,15 @@ public sealed partial class TerminalPane
         string? model = await client.ReadConfiguredPlanMakerModelAsync(await client.ReadAgentsAsync(cleanup.Token), cleanup.Token);
         if (_usesNativeOpenCodeTui && !_session.IsRunning)
             throw new IOException("플랜 정리용 OpenCode 터미널 연결이 끊겼습니다.");
-        return await client.CompleteToolLessPromptAsync("Terminal Notes · 플랜 정리", prompt, model, cleanup.Token,
+        // The prompt holds the whole plan: the project's AGENTS.md would only make every call longer (2026-11-12 사용자:
+        // "퀄리티좋은 선에서 빠르게 해"), so the request goes from an empty folder when the model setup there is the same.
+        using var bare = await client.WithoutProjectContextAsync(PlanCleanupDirectory, cleanup.Token);
+        return await (bare ?? client).CompleteToolLessPromptAsync("Terminal Notes · 플랜 정리", prompt, model, cleanup.Token,
             timeout: TimeSpan.FromMinutes(30), idleLimit: TimeSpan.FromMinutes(3), progress: progress);
     }
+
+    // Kept empty: the plan cleanup's requests run here so that no project instruction file goes with them.
+    internal static string PlanCleanupDirectory => Path.Combine(OpenCodeProjectContext.DataDirectory, "plan-cleanup");
 
     internal async Task<string> CreatePlanWithQuestionsAsync(string prompt, Func<bool> stillOwned,
         Action<string> reportPhase, CancellationToken cancellationToken, Action<string>? reportDraft = null,

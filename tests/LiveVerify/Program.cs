@@ -42,6 +42,7 @@ internal static class Program
             await host.StartAsync(project, null, autoMode: true);
             Log($"server {host.ProcessId} on {port}");
             using var client = new OpenCodeConversationClient(endpoint, project);
+            if (args.Contains("cleanup-folder")) return await CleanupFolderAsync(client, project, root);
             string? model = args.FirstOrDefault(arg => arg.Contains('/'));
             if (args.Contains("limit"))
             {
@@ -303,6 +304,27 @@ internal static class Program
     }
 
     private static string Indent(string text) => string.Join("\n", text.Trim().Split('\n').Take(40).Select(line => "      " + line));
+
+    // The plan cleanup asks from an empty folder (no project AGENTS.md) only while that folder sees the project's model setup.
+    // Real OpenCode, no model call.
+    private static async Task<int> CleanupFolderAsync(OpenCodeConversationClient client, string project, string root)
+    {
+        string empty = Path.Combine(root, "plan-cleanup");
+        await File.WriteAllTextAsync(Path.Combine(project, "AGENTS.md"), "# Project rules\n\n" + string.Concat(Enumerable.Repeat("- 긴 프로젝트 지침 줄\n", 2000)));
+        using (var bare = await client.WithoutProjectContextAsync(empty, CancellationToken.None))
+            Assert(bare is not null && Directory.Exists(empty), "with the model set up outside the project, the cleanup asks from the empty folder");
+        await File.WriteAllTextAsync(Path.Combine(project, "opencode.json"),
+            "{\"$schema\":\"https://opencode.ai/config.json\",\"model\":\"opencode/big-pickle\"}");
+        await client.DisposeInstanceAsync();
+        using (var bare = await client.WithoutProjectContextAsync(empty, CancellationToken.None))
+            Assert(bare is null, "a model set in the project's opencode.json keeps the cleanup in the project");
+        File.Delete(Path.Combine(project, "opencode.json"));
+        await client.DisposeInstanceAsync();
+        using (var bare = await client.WithoutProjectContextAsync(empty, CancellationToken.None))
+            Assert(bare is not null, "without it again, the empty folder is used again");
+        Log(_failures == 0 ? "CLEANUP FOLDER PASSED" : "CLEANUP FOLDER FAILED");
+        return _failures == 0 ? 0 : 1;
+    }
 
     private static int FreePort()
     {

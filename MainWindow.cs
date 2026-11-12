@@ -4254,7 +4254,8 @@ public partial class MainWindow
         if (project is not null && _organizeProgress.TryGetValue(project, out var progress)) ShowOrganizeProgressOnButton(progress.Percent);
         else
         {
-            _organizePlanButton.Content = project is not null && _organizingPlans.Contains(project) ? "정리 중…" : "플랜 정리";
+            _organizePlanButton.Content = project is not null && _organizingPlans.Contains(project) ? "정리 중…" :
+                project is not null && PlanCleanupScheduleFor(project) is { } at ? "정리 예약 " + PlanCleanupTimeLabel(at) : "플랜 정리";
             System.Windows.Automation.AutomationProperties.SetHelpText(_organizePlanButton, "");
         }
         // While this task's cleanup runs, the button brings its window back to the front.
@@ -4301,9 +4302,13 @@ public partial class MainWindow
         string path = _activeTabDocumentPath!;
         string project = _projectInputProject!;
         string original = _tabDocumentStates[path].Draft;
-        bool confirmed = OrganizePlanConfirmationOverride?.Invoke() ?? AppMessageDialog.Confirm(this, "플랜 정리",
-            "플랜을 정리하시겠습니까?\n\n불필요한 단어·반복 표현과 불필요하거나 불분명한 항목을 제거하고, 남은 항목을 목표·기능·화면·기술·검증 같은 유형별로 묶어 다시 구성합니다. 남기는 수치·경로·코드는 바꾸지 않으며, 지운 항목은 이유와 함께 알려 드립니다.\n\n플랜메이커처럼 OpenCode(같은 모델)로 정리하며, 결과는 미저장 초안으로 반영되어 저장 또는 실행을 눌러야 확정됩니다.", "정리");
-        if (!confirmed || !CanOrganizeProjectPlan() || _projectInputProject != project || _activeTabDocumentPath != path ||
+        var scheduled = PlanCleanupScheduleFor(project);
+        // 지금 정리, or 예약… for a set time (the time window says how its result is kept).
+        bool? choice = OrganizePlanConfirmationOverride is { } confirm ? confirm() ? true : null : AppMessageDialog.ConfirmOr(this, "플랜 정리",
+            "플랜을 정리하시겠습니까?\n\n불필요한 단어·반복 표현과 불필요하거나 불분명한 항목을 제거하고, 남은 항목을 목표·기능·화면·기술·검증 같은 유형별로 묶어 다시 구성합니다. 남기는 수치·경로·코드는 바꾸지 않으며, 지운 항목은 이유와 함께 알려 드립니다.\n\n플랜메이커처럼 OpenCode(같은 모델)로 정리하며, 결과는 미저장 초안으로 반영되어 저장 또는 실행을 눌러야 확정됩니다." +
+            (scheduled is { } at ? $"\n\n예약: {at.LocalDateTime:yyyy-MM-dd HH:mm}" : ""), "지금 정리", scheduled is null ? "예약…" : "예약 변경…");
+        if (choice == false) { ShowPlanCleanupSchedule(project); return; }
+        if (choice != true || !CanOrganizeProjectPlan() || _projectInputProject != project || _activeTabDocumentPath != path ||
             _tabDocumentStates[path].Draft != original) return;
         await OrganizePlanDraftAsync(project, path, "플랜 정리");
     }
@@ -4339,7 +4344,8 @@ public partial class MainWindow
         // main window, so other tasks' cleanups can run at the same time, each in its own window.
         // A finished window of an earlier cleanup of this task gives way to the new one.
         if (_planCleanupWindows.TryGetValue(project, out var earlier) && earlier.IsFinished) earlier.Close();
-        PlanCleanupDialog? window = PlanCleanupWindowEnabled && IsLoaded && IsVisible && !_closePending
+        // Not while the window is only laid out off the screens for background work (it goes back to the tray).
+        PlanCleanupDialog? window = PlanCleanupWindowEnabled && IsLoaded && IsVisible && !_closePending && _backgroundShow == BackgroundShow.None
             ? new PlanCleanupDialog(this, ProjectDisplayName(project), heading, progress, stop.Cancel,
                 () => _closing || _closePending || _resourcesDisposed || Dispatcher.HasShutdownStarted,
                 _planCleanupWindows.Values.Count(open => open.IsVisible))
@@ -4523,85 +4529,126 @@ public partial class MainWindow
     // Estimated progress of one plan cleanup. OpenCode publishes an answer only when it is complete, so the share of a
     // model call comes from its elapsed time against the time expected for its size (learned from the earlier calls of
     // this run) and from any text already received. It never goes back and stays below 100 until the result is applied.
+    // The parts of a long plan are cleaned at the same time (2026-11-12), so every step in progress has a lane of its own.
     private sealed class OrganizeProgress(string heading, int planLength)
     {
+        internal sealed class Lane
+        {
+            internal readonly System.Diagnostics.Stopwatch Call = new();
+            internal int CallChars = 1, Received;
+            internal double Floor;
+            internal string Phase = "";
+        }
+
         private readonly System.Diagnostics.Stopwatch _total = System.Diagnostics.Stopwatch.StartNew();
-        private readonly System.Diagnostics.Stopwatch _call = new();
-        private int _steps = 1, _done, _callChars = 1, _received;
-        private double _callFloor, _shown, _secondsPerChar;
+        private readonly List<Lane> _lanes = [];
+        private int _steps = 1, _done;
+        private double _shown, _secondsPerChar;
         public string Heading { get; } = heading;
         public int PlanLength { get; } = planLength;
         private string _phase = "정리 모델 준비 중";
-        public string Phase { get => _phase; private set { if (_phase == value) return; _phase = value; History.Add((_total.Elapsed, value)); } }
+        // One call: its step. Several: how many parts are being cleaned at once (each one's step is in History).
+        public string Phase
+        {
+            get
+            {
+                var calling = Calls();
+                return calling.Length switch { 0 => _phase, 1 => calling[0].Phase, _ => $"부분 {calling.Length}개를 동시에 정리하는 중" };
+            }
+        }
         // Every step this run has gone through, with when it started (shown in the cleanup window).
         public List<(TimeSpan At, string Phase)> History { get; } = [(TimeSpan.Zero, "정리 모델 준비 중")];
         public TimeSpan Elapsed => _total.Elapsed;
         public int Steps => _steps;
         public int StepsDone => _done;
-        public int ReceivedChars => Volatile.Read(ref _received);
-        public bool Calling => _call.IsRunning;
+        public int ReceivedChars => Lanes().Sum(lane => Volatile.Read(ref lane.Received));
+        public bool Calling => Calls().Length > 0;
+        // The longest wait among the requests in flight.
+        public TimeSpan CallElapsed => Calls().Select(lane => lane.Call.Elapsed).DefaultIfEmpty().Max();
 
-        public void SetSteps(int steps) => _steps = Math.Max(1, steps);
-        public void SetPhase(string phase) => Phase = phase;
+        private Lane[] Lanes() { lock (_lanes) return [.. _lanes]; }
+        private Lane[] Calls() => Lanes().Where(lane => lane.Call.IsRunning).ToArray();
 
-        public void BeginCall(int inputChars, string phase)
+        private void Record(string phase)
         {
-            _callFloor = StepFraction();
-            _callChars = Math.Max(1, inputChars);
-            Volatile.Write(ref _received, 0);
-            Phase = phase;
-            _call.Restart();
+            if (_phase == phase) return;
+            _phase = phase;
+            History.Add((_total.Elapsed, phase));
         }
 
-        public void EndCall()
+        public void SetSteps(int steps) => _steps = Math.Max(1, steps);
+        public void SetPhase(string phase) => Record(phase);
+
+        public Lane BeginStep()
         {
-            if (!_call.IsRunning) return;
-            _callFloor = StepFraction();
-            _call.Stop();
-            double perChar = _call.Elapsed.TotalSeconds / _callChars;
+            var lane = new Lane();
+            lock (_lanes) _lanes.Add(lane);
+            return lane;
+        }
+
+        public void BeginCall(Lane lane, int inputChars, string phase)
+        {
+            lane.Floor = StepFraction(lane);
+            lane.CallChars = Math.Max(1, inputChars);
+            Volatile.Write(ref lane.Received, 0);
+            lane.Phase = phase;
+            Record(phase);
+            lane.Call.Restart();
+        }
+
+        public void EndCall(Lane lane)
+        {
+            if (!lane.Call.IsRunning) return;
+            lane.Floor = StepFraction(lane);
+            lane.Call.Stop();
+            double perChar = lane.Call.Elapsed.TotalSeconds / lane.CallChars;
             _secondsPerChar = _secondsPerChar == 0 ? perChar : (_secondsPerChar + perChar) / 2;
-            Phase = "결과 확인 중";
+            if (!Calling) Record("결과 확인 중");
         }
 
         // Text the model has published so far (often nothing until the end); called from a background thread.
-        public void Received(int chars) => Volatile.Write(ref _received, chars);
+        public void Received(Lane lane, int chars) => Volatile.Write(ref lane.Received, chars);
 
-        public void CompleteStep()
+        // A step that needed no model call (null) counts as done as well.
+        public void CompleteStep(Lane? lane)
         {
+            if (lane is not null) lock (_lanes) _lanes.Remove(lane);
             _done = Math.Min(_steps, _done + 1);
-            _callFloor = 0;
-            _call.Reset();
+        }
+
+        // A step that ended without a result (failed or stopped) leaves the estimate without counting as done.
+        public void Abandon(Lane lane)
+        {
+            lock (_lanes) _lanes.Remove(lane);
         }
 
         public void Finish()
         {
+            lock (_lanes) _lanes.Clear();
             _done = _steps;
-            _callFloor = 0;
             _shown = 100;
-            Phase = "완료";
+            Record("완료");
         }
 
         // t / (t + expected): half of the call's share at the expected time, and it keeps moving (more slowly) however long a
         // slow model takes, instead of reaching the top early and standing still (seen live: 93% after 4 minutes, then 5 still).
-        private double StepFraction()
+        private double StepFraction(Lane lane)
         {
-            if (!_call.IsRunning) return _callFloor;
-            double expected = _secondsPerChar > 0 ? Math.Max(10, _secondsPerChar * _callChars * 1.15) : 20 + _callChars / 30.0;
-            double seconds = _call.Elapsed.TotalSeconds;
+            if (!lane.Call.IsRunning) return lane.Floor;
+            double expected = _secondsPerChar > 0 ? Math.Max(10, _secondsPerChar * lane.CallChars * 1.15) : 20 + lane.CallChars / 30.0;
+            double seconds = lane.Call.Elapsed.TotalSeconds;
             double byTime = seconds / (seconds + expected);
-            double byText = Math.Min(1, Volatile.Read(ref _received) / Math.Max(100.0, _callChars * 0.5));
+            double byText = Math.Min(1, Volatile.Read(ref lane.Received) / Math.Max(100.0, lane.CallChars * 0.5));
             // A retry in the same step still needs room: one call takes at most most of what is left of the step.
-            return Math.Min(0.95, _callFloor + (0.95 - _callFloor) * 0.85 * Math.Max(byTime, byText));
+            return Math.Min(0.95, lane.Floor + (0.95 - lane.Floor) * 0.85 * Math.Max(byTime, byText));
         }
-
-        public TimeSpan CallElapsed => _call.Elapsed;
 
         public int Percent
         {
             get
             {
                 if (_shown >= 100) return 100;
-                double value = 2 + 96 * (_done + StepFraction()) / _steps;
+                double value = 2 + 96 * Math.Min(_steps, _done + Lanes().Sum(StepFraction)) / _steps;
                 _shown = Math.Max(_shown, Math.Min(99, value));
                 return (int)_shown;
             }
@@ -4626,43 +4673,81 @@ public partial class MainWindow
         // A plan cleaned in parts gets one more pass over the whole result when it fits, so items of one type from
         // different parts end up under one heading.
         stats.Progress?.SetSteps(parts.Count + (parts.Count > 1 ? 1 : 0));
-        async Task<string> Work(Func<string, CancellationToken, Task<string>> ask)
+        async Task<string> Work(CondenseAsk ask)
         {
             string combined = await CondensePartsAsync(parts, ask, stats, cancellationToken);
             if (parts.Count == 1) return combined;
             combined = PlanMakerWorkflow.MergePlanAdditions(combined, "");
-            if (combined.Length > PlanMakerWorkflow.CondenseWholePlanLimit) { stats.Progress?.CompleteStep(); return combined; }
+            if (combined.Length > PlanMakerWorkflow.CondenseWholePlanLimit) { stats.Progress?.CompleteStep(null); return combined; }
             return await RegroupWholePlanAsync(combined, ask, stats, cancellationToken);
         }
-        if (PlanCondenseOverride is { } condense) return await Work(condense);
+        if (PlanCondenseOverride is { } condense) return await Work((prompt, _, token) => condense(prompt, token));
         // Right after PlanMaker: its own OpenCode is still running, so no terminal has to start.
         if (openCode is { IsRunning: true, CanStartNativeAutomation: true })
-            return await Work((prompt, token) => openCode.CompletePlanCleanupAsync(prompt, received => stats.Progress?.Received(received), token));
+            return await Work(openCode.CompletePlanCleanupAsync);
         return await RunCondenseSessionAsync(project, Work, stats.Progress, cancellationToken);
     }
 
-    // One model call with the progress clock running for its input size.
-    private static async Task<string> AskCondenseAsync(Func<string, CancellationToken, Task<string>> ask, string prompt, int inputChars,
-        string phase, CondenseStats stats, CancellationToken cancellationToken)
+    // One cleanup request: the prompt, where the text the model has published so far goes, and its cancellation.
+    private delegate Task<string> CondenseAsk(string prompt, Action<int>? received, CancellationToken cancellationToken);
+
+    // One model call with the progress clock of its step running for its input size.
+    private static async Task<string> AskCondenseAsync(CondenseAsk ask, string prompt, int inputChars, string phase,
+        CondenseStats stats, OrganizeProgress.Lane? lane, CancellationToken cancellationToken)
     {
-        stats.Progress?.BeginCall(inputChars, phase);
-        try { return await ask(prompt, cancellationToken); }
-        finally { stats.Progress?.EndCall(); }
+        if (stats.Progress is not { } progress || lane is null) return await ask(prompt, null, cancellationToken);
+        progress.BeginCall(lane, inputChars, phase);
+        try { return await ask(prompt, received => progress.Received(lane, received), cancellationToken); }
+        finally { progress.EndCall(lane); }
+    }
+
+    // The parts of a long plan are cleaned at the same time (2026-11-12 사용자: "시간이 걸려도 제대로 정리를 해야해 그러니
+    // 퀄리티좋은 선에서 빠르게 해"): every part gets exactly the requests and checks it got one after another before, only no
+    // part waits for the one before it. A few at a time, so one model server is not flooded.
+    internal const int CondenseConcurrentParts = 3;
+
+    private sealed record CondensedPart(string Text, List<PlanMakerWorkflow.CondenseRemoval> Removed, int RestoredValues, bool Kept);
+
+    private static async Task<string> CondensePartsAsync(IReadOnlyList<string> parts, CondenseAsk ask, CondenseStats stats,
+        CancellationToken cancellationToken)
+    {
+        using var failed = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var gate = new SemaphoreSlim(CondenseConcurrentParts);
+        async Task<CondensedPart> Run(int index)
+        {
+            await gate.WaitAsync(failed.Token);
+            try { return await CondensePartAsync(parts, index, ask, stats, failed.Token); }
+            // A part that fails outright ends the cleanup: the others stop instead of running on for nothing.
+            catch (Exception exception) when (exception is not OperationCanceledException) { failed.Cancel(); throw; }
+            finally { gate.Release(); }
+        }
+        var results = await Task.WhenAll(Enumerable.Range(0, parts.Count).Select(Run).ToArray());
+        // In plan order, whichever part finished first.
+        foreach (var result in results)
+        {
+            if (result.Kept) stats.KeptParts++;
+            stats.RestoredValues += result.RestoredValues;
+            foreach (var item in result.Removed)
+                if (!stats.Removed.Contains(item)) stats.Removed.Add(item);
+        }
+        return string.Join("\n\n", results.Select(result => result.Text.Trim()));
     }
 
     // Each part is condensed and checked on its own. A value may only go when the model lists its original line as
     // removed (불필요·불분명); otherwise it is told which values it dropped and asked again, and if it still drops them its
     // cleanup is kept and only the original lines holding those values are put back. A result that barely shrank gets one
     // more, firmer pass. Only a malformed or failed answer leaves a part as it was.
-    private async Task<string> CondensePartsAsync(IReadOnlyList<string> parts, Func<string, CancellationToken, Task<string>> ask,
+    private static async Task<CondensedPart> CondensePartAsync(IReadOnlyList<string> parts, int index, CondenseAsk ask,
         CondenseStats stats, CancellationToken cancellationToken)
     {
-        var results = new List<string>();
-        for (int index = 0; index < parts.Count; index++)
+        string part = parts[index];
+        string Phase(string what) => parts.Count > 1 ? $"{index + 1}/{parts.Count} 부분 · {what}" : what;
+        var lane = stats.Progress?.BeginStep();
+        bool completed = false;
+        try
         {
-            string part = parts[index];
-            string Phase(string what) => parts.Count > 1 ? $"{index + 1}/{parts.Count} 부분 · {what}" : what;
             string? condensed = null, rejection = null;
+            int restoredValues = 0;
             List<PlanMakerWorkflow.CondenseRemoval> removed = [];
             Exception? lastError = null;
             for (int attempt = 0; attempt < 2 && condensed is null; attempt++)
@@ -4670,7 +4755,7 @@ public partial class MainWindow
                 try
                 {
                     string response = await AskCondenseAsync(ask, PlanMakerWorkflow.BuildPlanCondensePrompt(part, rejection), part.Length,
-                        Phase(attempt == 0 ? "불필요·불분명 항목 제거, 유형별로 묶는 중" : "빠진 값을 알려 다시 정리하는 중"), stats, cancellationToken);
+                        Phase(attempt == 0 ? "불필요·불분명 항목 제거, 유형별로 묶는 중" : "빠진 값을 알려 다시 정리하는 중"), stats, lane, cancellationToken);
                     string plan = PlanMakerWorkflow.ParseCondensedPlan(response);
                     removed = PlanMakerWorkflow.ParseCondenseRemovals(part, response);
                     var missing = PlanMakerWorkflow.FindMissingCondenseValues(part, plan, removed);
@@ -4684,7 +4769,7 @@ public partial class MainWindow
                     if (PlanMakerWorkflow.FindMissingCondenseValues(part, restored, removed).Count == 0)
                     {
                         condensed = restored;
-                        stats.RestoredValues += missing.Count;
+                        restoredValues += missing.Count;
                     }
                     else lastError = new global::System.IO.InvalidDataException("정리 결과에서 원문의 값을 되살리지 못했습니다.");
                 }
@@ -4702,7 +4787,7 @@ public partial class MainWindow
                 try
                 {
                     string response = await AskCondenseAsync(ask, PlanMakerWorkflow.BuildPlanCondensePrompt(condensed, null, Math.Max(200, part.Length / 2)),
-                        condensed.Length, Phase("줄어든 양이 적어 한 번 더 줄이는 중"), stats, cancellationToken);
+                        condensed.Length, Phase("줄어든 양이 적어 한 번 더 줄이는 중"), stats, lane, cancellationToken);
                     string again = PlanMakerWorkflow.ParseCondensedPlan(response);
                     var againRemoved = removed.Concat(PlanMakerWorkflow.ParseCondenseRemovals(part + "\n" + condensed, response)).Distinct().ToList();
                     string checkedAgain = PlanMakerWorkflow.RestoreMissingCondenseValues(part, again, againRemoved);
@@ -4715,30 +4800,33 @@ public partial class MainWindow
                 catch (Exception exception) when (exception is global::System.IO.InvalidDataException or global::System.IO.IOException &&
                     !cancellationToken.IsCancellationRequested) { }
             }
+            CondensedPart result;
             if (condensed is null)
             {
                 if (parts.Count == 1) throw lastError ?? new global::System.IO.InvalidDataException("플랜 정리 결과를 받지 못했습니다.");
-                stats.KeptParts++;
-                condensed = part;
-                removed = [];
+                result = new(part, [], 0, Kept: true);
             }
-            foreach (var item in removed)
-                if (!stats.Removed.Contains(item)) stats.Removed.Add(item);
-            stats.Progress?.CompleteStep();
-            results.Add(condensed.Trim());
+            else result = new(condensed, removed, restoredValues, Kept: false);
+            stats.Progress?.CompleteStep(lane);
+            completed = true;
+            return result;
         }
-        return string.Join("\n\n", results);
+        finally
+        {
+            if (!completed && lane is not null) stats.Progress?.Abandon(lane);
+        }
     }
 
     // The last pass of a plan cleaned in parts: the same cleanup over the combined result, checked against it. A failed or
     // invalid answer keeps the combined result.
-    private async Task<string> RegroupWholePlanAsync(string combined, Func<string, CancellationToken, Task<string>> ask,
-        CondenseStats stats, CancellationToken cancellationToken)
+    private static async Task<string> RegroupWholePlanAsync(string combined, CondenseAsk ask, CondenseStats stats,
+        CancellationToken cancellationToken)
     {
+        var lane = stats.Progress?.BeginStep();
         try
         {
             string response = await AskCondenseAsync(ask, PlanMakerWorkflow.BuildPlanCondensePrompt(combined), combined.Length,
-                "전체를 유형별로 다시 묶는 중", stats, cancellationToken);
+                "전체를 유형별로 다시 묶는 중", stats, lane, cancellationToken);
             string plan = PlanMakerWorkflow.ParseCondensedPlan(response);
             var removed = PlanMakerWorkflow.ParseCondenseRemovals(combined, response);
             string restored = PlanMakerWorkflow.RestoreMissingCondenseValues(combined, plan, removed);
@@ -4749,14 +4837,14 @@ public partial class MainWindow
         }
         catch (Exception exception) when (exception is global::System.IO.InvalidDataException or global::System.IO.IOException &&
             !cancellationToken.IsCancellationRequested) { return combined; }
-        finally { stats.Progress?.CompleteStep(); }
+        finally { stats.Progress?.CompleteStep(lane); }
     }
 
     // The cleanup goes through OpenCode the way PlanMaker does (2026-11-06 사용자: "정리도 opencode를 통해서 정리해야해
     // 플랜메이커처럼"): a dedicated OpenCode terminal (TUI and its server) for this run, kept offscreen, with PlanMaker's
     // model. Every request of the run uses a tool-less session of its own on it; the project's terminals are not touched.
     private async Task<string> RunCondenseSessionAsync(string project,
-        Func<Func<string, CancellationToken, Task<string>>, Task<string>> work, OrganizeProgress? progress, CancellationToken cancellationToken)
+        Func<CondenseAsk, Task<string>> work, OrganizeProgress? progress, CancellationToken cancellationToken)
     {
         var cleaner = new TerminalPane(project, startupCommand: "opencode", protectTuiViewport: true,
             paneKey: "plan-cleanup-" + Guid.NewGuid().ToString("N"), useProjectContext: false);
@@ -4792,7 +4880,7 @@ public partial class MainWindow
                     await Task.Delay(100, readiness.Token);
                 }
             }
-            return await work((prompt, token) => cleaner.CompletePlanCleanupAsync(prompt, received => progress?.Received(received), token));
+            return await work(cleaner.CompletePlanCleanupAsync);
         }
         finally
         {
@@ -5396,6 +5484,7 @@ public partial class MainWindow
         if (excluded ? !_excludedTaskProjects.Add(key) : !_excludedTaskProjects.Remove(key)) return;
         // A hidden task never starts by itself.
         bool scheduleCanceled = excluded && _projectStartSchedules.ContainsKey(key) && SetProjectStartSchedule(key, null);
+        if (excluded && PlanCleanupScheduleFor(key) is not null) SetPlanCleanupSchedule(key, null);
         SaveSettings();
         ShowProjectTaskList();
         UpdateProjectTaskActivity();
@@ -5853,6 +5942,7 @@ public partial class MainWindow
         _projectInputDrafts.Remove(project);
         _loadedSingleImprovementPreferences.Remove(project);
         SetProjectStartSchedule(project, null);
+        SetPlanCleanupSchedule(project, null);
         ForgetTaskAgent(project);
         ForgetTaskOrderEntry(project);
         _projectNames.RemoveAll(entry => DirectoriesEqual(entry.Project, project));
@@ -5920,6 +6010,7 @@ public partial class MainWindow
         MovePreference(_projectTaskImprovementUntil, source, destination);
         MovePreference(_projectInputDrafts, source, destination);
         MoveProjectStartSchedule(source, destination);
+        MovePlanCleanupSchedule(source, destination);
         MoveTaskAgent(source, destination);
         MoveTaskOrderEntry(source, destination);
         if (_loadedSingleImprovementPreferences.Remove(source)) _loadedSingleImprovementPreferences.Add(destination);
@@ -8999,6 +9090,16 @@ public partial class MainWindow
         scheduleCancel.Click += (_, e) => { e.Handled = true; CancelProjectStartSchedule(project); };
         contextMenu.Items.Add(schedule);
         contextMenu.Items.Add(scheduleCancel);
+        // Plan cleanup at a set time (the night, when the model answers faster); the header shows the time once set.
+        var cleanupSchedule = new MenuItem { Header = "플랜 정리 예약…", ToolTip = "정한 시간에 이 태스크의 플랜을 정리해 plan.md에 저장합니다." };
+        System.Windows.Automation.AutomationProperties.SetAutomationId(cleanupSchedule, "PlanCleanupScheduleMenu");
+        cleanupSchedule.Click += (_, e) => { e.Handled = true; ShowPlanCleanupSchedule(project); };
+        contextMenu.Opened += (_, _) =>
+        {
+            cleanupSchedule.Visibility = IsBasicWorkMode ? Visibility.Collapsed : Visibility.Visible;
+            cleanupSchedule.Header = PlanCleanupScheduleFor(project) is { } at ? "플랜 정리 예약 변경 · " + PlanCleanupTimeLabel(at) : "플랜 정리 예약…";
+        };
+        contextMenu.Items.Add(cleanupSchedule);
         contextMenu.Items.Add(until);
         // The skills only this task uses, on top of the global ones (the store window, for this task's folder).
         // Only for the accounts that see the store (the master accounts, MASTER_USERS).
@@ -10631,8 +10732,8 @@ public partial class MainWindow
     private bool HasWorkRequiringSystemAwake()
     {
         if (_closing || _resourcesDisposed) return false;
-        // A timed task start must not be slept through.
-        if (_projectStartSchedules.Count > 0) return true;
+        // A timed task start or plan cleanup must not be slept through.
+        if (_projectStartSchedules.Count > 0 || _planCleanupSchedules.Count > 0) return true;
         foreach (var runtime in _automationRuntimes.Values)
         {
             if (runtime.SingleStopped || runtime.SingleError is not null) continue;
@@ -10659,6 +10760,7 @@ public partial class MainWindow
     private void UpdateSleepPrevention()
     {
         bool required = HasWorkRequiringSystemAwake();
+        _sleepPreventionRequired = required;
         _sleepPrevention.SetRequired(required);
         if (_sleepPrevention.LastError is { } error && error != _sleepPreventionError)
             RecordAutomationDiagnostic("sleep_prevention_failed", error, severity: "warning");
@@ -10667,12 +10769,14 @@ public partial class MainWindow
 
     private void PowerModeChanged(object sender, PowerModeChangedEventArgs e)
     {
+        if (e.Mode == PowerModes.Suspend) { NoteSuspend(); return; }
         if (e.Mode != PowerModes.Resume || Dispatcher.HasShutdownStarted) return;
         _ = Dispatcher.BeginInvoke(() =>
         {
             if (_closing || _resourcesDisposed) return;
             _sleepPrevention.ResetAfterResume();
             UpdateSleepPrevention();
+            NoteResume();
         });
     }
 
@@ -15051,7 +15155,11 @@ public partial class MainWindow : Window
         WorkspaceLabel.Text = _workspace; WorkspaceLabel.ToolTip = _workspace;
         InitializeSleepPrevention();
         // Test windows never pick up (and so never start) the user's saved schedules.
-        if (_autoStartCodex) InitializeProjectStartSchedules();
+        if (_autoStartCodex)
+        {
+            InitializeProjectStartSchedules();
+            InitializePlanCleanupSchedules();
+        }
         ResumeInterruptedLoops();
         if (!IsBasicWorkMode) _ = RefreshProjectTasksAsync();
         if (IsBasicWorkMode)
