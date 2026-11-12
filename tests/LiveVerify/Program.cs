@@ -172,7 +172,7 @@ internal static class Program
         MySkills.Save(null, "CSV 월별 합계 내기", "CSV에서 월별 합계를 낼 때", "1. Import-Csv로 읽는다.\n2. Group-Object month로 묶는다.\n3. Measure-Object -Sum으로 더한다.", learned: true);
         MySkills.Save(null, "월별 매출 집계", "매출 CSV를 월별로 집계할 때", "- Import-Csv 후 month별 Group-Object\n- amount 합계는 Measure-Object -Sum\n- 결과를 표로 쓴다", learned: true);
         int proposed = 0;
-        const int rounds = 4;
+        const int rounds = 2;
         for (int round = 1; round <= rounds; round++)
         {
             MySkills.UpdateSettings(settings => settings with { Proposals = [] });
