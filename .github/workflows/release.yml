@@ -68,10 +68,11 @@ jobs:
             $latest = [version]($release.tag_name.TrimStart('v', 'V'))
           } catch { Write-Host "No previous release." }
           # Never go backwards: the csproj version is the floor, otherwise one past the latest release.
-          if ($latest -and $latest -ge $base) { $next = [version]::new($latest.Major, $latest.Minor, $latest.Build + 1) } else { $next = [version]::new($base.Major, $base.Minor, [Math]::Max(0, $base.Build)) }
+          # Every part 0-9: 1.0.9 -> 1.1.0, 1.9.9 -> 2.0.0.
+          if ($latest -and $latest -ge $base) { $major = $latest.Major; $minor = $latest.Minor; $patch = $latest.Build + 1; if ($patch -gt 9) { $patch = 0; $minor++ }; if ($minor -gt 9) { $minor = 0; $patch = 0; $major++ }; $next = [version]::new($major, $minor, $patch) } else { $next = [version]::new($base.Major, $base.Minor, [Math]::Max(0, $base.Build)) }
           if ($env:REQUESTED_VERSION -and $env:REQUESTED_VERSION.Trim()) {
             $wanted = $env:REQUESTED_VERSION.Trim().TrimStart('v', 'V')
-            if ($wanted -notmatch '^\d+\.\d+\.\d+$') { throw "Version must look like 1.2.3: $wanted" }
+            if ($wanted -notmatch '^\d+\.\d\.\d$') { throw "Version must look like 1.2.3 (middle and last 0-9): $wanted" }
             if ($latest -and [version]$wanted -le $latest) { throw "Version $wanted must be above the latest release." }
             $next = [version]$wanted
           }
