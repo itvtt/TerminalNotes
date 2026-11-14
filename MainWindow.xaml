@@ -516,7 +516,7 @@
   </Style>
  </Window.Resources>
  <Grid Background="{StaticResource Canvas}">
-  <Grid.RowDefinitions><RowDefinition Height="36"/><RowDefinition Height="Auto"/><RowDefinition Height="22"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+  <Grid.RowDefinitions><RowDefinition Height="36"/><RowDefinition Height="Auto"/><RowDefinition Height="22"/><RowDefinition Height="*"/><RowDefinition Height="16"/></Grid.RowDefinitions>
   <Grid x:Name="WindowTitleBar" Background="{StaticResource TitleBarGradient}">
    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
    <Border Height="1" VerticalAlignment="Bottom" Background="{StaticResource GoldLine}" Grid.ColumnSpan="2" IsHitTestVisible="False"/>
@@ -675,6 +675,7 @@
    </Grid>
   </Grid>
   <Border Grid.Row="2" Background="{StaticResource Canvas}" BorderThickness="0"><TextBlock x:Name="StatusLabel" Text="준비 중…" FontSize="12" Foreground="{StaticResource Muted}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="16,0"/></Border>
+  <TextBlock Grid.Row="4" Text="made by jy01.ahn" FontSize="10" Foreground="{StaticResource Muted}" Opacity="0.75" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,12,1" IsHitTestVisible="False"/>
  </Grid>
 </Window>
 
