@@ -164,8 +164,12 @@ internal static class Program
             restored.IndexOf("config/app.yaml", StringComparison.Ordinal) > restored.IndexOf("## 데이터", StringComparison.Ordinal) &&
             restored.Length < noisy.Length,
             "Restored values must return under their own headings while the cleanup stays shorter: " + restored);
-        Check(PlanMakerWorkflow.BuildPlanCondensePrompt(noisy).Contains($"{noisy.Length:N0}자", StringComparison.Ordinal),
-            "The cleanup prompt must state the current length and a target.");
+        // No character target: with one the model counted characters until its reasoning ran out and wrote nothing (2026-11-13).
+        Check(!System.Text.RegularExpressions.Regex.IsMatch(PlanMakerWorkflow.BuildPlanCondensePrompt(noisy), @"\d+자") &&
+            !System.Text.RegularExpressions.Regex.IsMatch(PlanMakerWorkflow.BuildPlanCondensePrompt(noisy, null, firmer: true), @"\d+자") &&
+            PlanMakerWorkflow.BuildPlanCondensePrompt(noisy).Contains("글자 수를 세거나", StringComparison.Ordinal) &&
+            PlanMakerWorkflow.BuildPlanCondensePrompt(noisy, null, firmer: true).Contains("절반", StringComparison.Ordinal),
+            "The cleanup prompt must ask to cut boldly without a character count to hit.");
 
         // 2026-11-05: unnecessary or unclear lines may go only when listed with their original text; a paraphrase,
         // a bare value or a code block in the removal list excuses nothing.

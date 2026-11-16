@@ -279,7 +279,7 @@ internal static class Program
         var texts = Descendants(dialog).OfType<TextBlock>().Where(text => text.IsVisible).ToList();
         Assert(texts.Any(text => AutomationProperties.GetAutomationId(text) == "SkillPartHeading" && text.Text == "나만의 스킬 · 2"), "the view is headed with its count");
         Assert(texts.Any(text => AutomationProperties.GetAutomationId(text) == "MySkillUsage" && text.Text.StartsWith($"켜짐 2/{MySkills.MaxApplied}", StringComparison.Ordinal)), "the usage of the limits is shown");
-        // The card is one line (자동 on it); how often it was used is in its details, opened by a click (2026-11-12).
+        // The card is a small tile (자동 on it); how often it was used is in its details, opened by a click (2026-11-12).
         Assert(texts.Any(text => text.Text == "자동") && !texts.Any(text => text.Text.Contains("사용 1회", StringComparison.Ordinal)) &&
             Descendants(dialog).OfType<System.Windows.Controls.Primitives.Popup>().Where(popup => popup.Child is not null)
                 .SelectMany(popup => Descendants(popup.Child)).OfType<TextBlock>()

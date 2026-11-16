@@ -101,7 +101,7 @@ internal sealed partial class SkillStoreDialog
         foreach (var proposal in settings.Proposals.Where(proposal => proposal.Names.All(name => skills.Any(skill => skill.Name == name))))
             _sections.Children.Add(ProposalRow(proposal, skills));
         var shown = skills.Where(Matches).ToList();
-        var grid = new UniformGrid { Columns = _columns, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(12, 0, 0, 4) };
+        var grid = new UniformGrid { Columns = _columns, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(8, 0, 0, 4) };
         foreach (var skill in shown) grid.Children.Add(MyCard(skill));
         _sections.Children.Add(grid);
         if (shown.Count == 0)
@@ -118,21 +118,25 @@ internal sealed partial class SkillStoreDialog
         return note;
     }
 
-    // One line like the store's cards: the title, 자동 and the version, ⋯ and the switch; a click opens the description and where
-    // and how often it was used.
+    // A row like the store's: the title over a quiet line (자동 in gold for a learned one, the version, the task it came from), the
+    // action and ⋯; a click opens the description and where and how often it was used.
     private Border MyCard(MySkills.Skill skill)
     {
-        var layout = new Grid();
-        layout.ColumnDefinitions.Add(new ColumnDefinition());
-        layout.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        layout.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        layout.Children.Add(new TextBlock { Text = skill.Title, FontSize = 14, FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis,
-            VerticalAlignment = VerticalAlignment.Center, ToolTip = skill.Title });
-        var marks = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(6, 0, 0, 0) };
-        if (skill.Learned) marks.Children.Add(Badge("자동", "작업에서 자동으로 배운 스킬"));
-        if (skill.Version > 1) marks.Children.Add(Badge($"v{skill.Version}", "고친 횟수만큼 버전이 올라갑니다."));
-        Grid.SetColumn(marks, 1);
-        layout.Children.Add(marks);
+        string where = skill.Project is { Length: > 0 } project ? Path.GetFileName(project.TrimEnd('\\', '/')) : "";
+        var marks = new StackPanel { Orientation = Orientation.Horizontal };
+        if (skill.Learned)
+        {
+            var learned = new TextBlock { Text = "자동", FontSize = 12, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 4, 0), ToolTip = "작업에서 자동으로 배운 스킬" };
+            learned.SetResourceReference(TextBlock.ForegroundProperty, "Accent");
+            marks.Children.Add(learned);
+        }
+        foreach (string part in new[] { $"v{skill.Version}", where }.Where(part => part.Length > 0))
+        {
+            var quiet = Quiet(marks.Children.Count == 0 ? part : "· " + part);
+            quiet.Margin = new Thickness(0, 0, 4, 0);
+            marks.Children.Add(quiet);
+        }
         var details = new StackPanel();
         details.Children.Add(DetailTitle(skill.Title));
         if (skill.Description.Length > 0) details.Children.Add(DetailText(skill.Description, "TextSecondary"));
@@ -144,21 +148,11 @@ internal sealed partial class SkillStoreDialog
         {
             if (Confirm($"'{skill.Title}'을(를) 지울까요? 이전 버전도 함께 지워집니다.")) Change(() => MySkills.Delete(skill.Name), $"'{skill.Title}'을(를) 지웠습니다.");
         });
-        var more = new Button { Content = StoreLook.Glyph(StoreLook.MoreGlyph, 16), Margin = new Thickness(2, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
-        more.SetResourceReference(StyleProperty, "IconButton");
-        AutomationProperties.SetName(more, "더 보기 · " + skill.Title);
-        more.Click += (_, _) => StoreLook.Open(menu, more);
-        var toggle = new ToggleButton { IsChecked = skill.Applied, Margin = new Thickness(8, 0, 6, 0), VerticalAlignment = VerticalAlignment.Center,
-            ToolTip = skill.Applied ? "켜짐 · 에이전트가 필요할 때 씁니다." : "꺼짐" };
-        toggle.SetResourceReference(StyleProperty, "StoreSwitch");
+        var toggle = new ToggleButton { IsChecked = skill.Applied, ToolTip = skill.Applied ? "켜짐 · 에이전트가 필요할 때 씁니다." : "꺼짐" };
         AutomationProperties.SetName(toggle, "켜기 · " + skill.Title);
         toggle.Click += (_, _) => Change(() => MySkills.SetApplied(skill.Name, toggle.IsChecked == true), null);
-        var actions = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-        actions.Children.Add(more);
-        actions.Children.Add(toggle);
-        Grid.SetColumn(actions, 2);
-        layout.Children.Add(actions);
-        string where = skill.Project is { Length: > 0 } project ? Path.GetFileName(project.TrimEnd('\\', '/')) : "";
+        // 나만의 스킬 is its own category: a person's icon.
+        var layout = RowLayout(skill.Title, ("\uE77B", MySkills.Category), marks, toggle, MoreButton(menu, skill.Title));
         var meta = new TextBlock { FontSize = 11.5, Margin = new Thickness(0, 8, 0, 0), TextTrimming = TextTrimming.CharacterEllipsis,
             Text = string.Join(" · ", new[] { skill.Updated.ToLocalTime().ToString("yyyy-MM-dd"), where, skill.Uses > 0 ? $"사용 {skill.Uses}회" : "" }.Where(part => part.Length > 0)),
             ToolTip = skill.LastUsed is { } used ? "마지막 사용 " + used.ToLocalTime().ToString("yyyy-MM-dd HH:mm") : "아직 쓰지 않음" };
@@ -167,16 +161,6 @@ internal sealed partial class SkillStoreDialog
         var card = CompactCard(layout, skill.Name, menu);
         AttachDetails(card, layout, details, menu);
         return card;
-    }
-
-    private static Border Badge(string text, string tip)
-    {
-        var label = new TextBlock { Text = text, FontSize = 11, FontWeight = FontWeights.SemiBold };
-        label.SetResourceReference(TextBlock.ForegroundProperty, "Accent");
-        var tag = new Border { Child = label, CornerRadius = new CornerRadius(8), Padding = new Thickness(7, 1, 7, 2), Margin = new Thickness(4, 0, 0, 0),
-            BorderThickness = new Thickness(1), ToolTip = tip, VerticalAlignment = VerticalAlignment.Center };
-        tag.SetResourceReference(Border.BorderBrushProperty, "ButtonLine");
-        return tag;
     }
 
     // A merge the curator proposes: which skills, why, and its merged text to look at before merging.

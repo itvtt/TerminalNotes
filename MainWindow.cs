@@ -4432,6 +4432,8 @@ public partial class MainWindow
             catch (Exception exception)
             {
                 StopProgress();
+                // Kept in the diagnostics too: a failed cleanup left no trace before (2026-11-13).
+                RecordAutomationDiagnostic("plan_cleanup_failed", exception.GetType().Name + " · " + exception.Message, severity: "warning");
                 Finish("플랜을 정리하지 못했습니다 · 원문과 초안은 그대로입니다 · " + exception.Message, false, true);
             }
             finally
@@ -4786,7 +4788,7 @@ public partial class MainWindow
             {
                 try
                 {
-                    string response = await AskCondenseAsync(ask, PlanMakerWorkflow.BuildPlanCondensePrompt(condensed, null, Math.Max(200, part.Length / 2)),
+                    string response = await AskCondenseAsync(ask, PlanMakerWorkflow.BuildPlanCondensePrompt(condensed, null, firmer: true),
                         condensed.Length, Phase("줄어든 양이 적어 한 번 더 줄이는 중"), stats, lane, cancellationToken);
                     string again = PlanMakerWorkflow.ParseCondensedPlan(response);
                     var againRemoved = removed.Concat(PlanMakerWorkflow.ParseCondenseRemovals(part + "\n" + condensed, response)).Distinct().ToList();

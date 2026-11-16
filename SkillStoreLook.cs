@@ -500,6 +500,34 @@ internal static class StoreLook
            </ControlTemplate.Triggers>
           </ControlTemplate></Setter.Value></Setter>
          </Style>
+         <!-- A skill row's one action, like an app store's: 적용 (gold) when off, 적용 중 when on, 해제 under the pointer. -->
+         <Style x:Key="StorePill" TargetType="ToggleButton">
+          <Setter Property="Height" Value="26"/><Setter Property="MinWidth" Value="64"/><Setter Property="Cursor" Value="Hand"/>
+          <Setter Property="FontSize" Value="12.5"/><Setter Property="FontWeight" Value="SemiBold"/>
+          <Setter Property="FocusVisualStyle" Value="{StaticResource StoreFocus}"/>
+          <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ToggleButton">
+           <Border x:Name="Chrome" CornerRadius="13" Background="#2A2A2A" BorderBrush="#2A2A2A" BorderThickness="1" Padding="12,0" SnapsToDevicePixels="True">
+            <Grid HorizontalAlignment="Center" VerticalAlignment="Center">
+             <TextBlock x:Name="Off" Text="적용" Foreground="{StaticResource Accent}"/>
+             <TextBlock x:Name="On" Text="적용 중" Foreground="{StaticResource TextSecondary}" Visibility="Hidden"/>
+             <TextBlock x:Name="Undo" Text="해제" Foreground="{StaticResource TextPrimary}" HorizontalAlignment="Center" Visibility="Hidden"/>
+            </Grid>
+           </Border>
+           <ControlTemplate.Triggers>
+            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Chrome" Property="Background" Value="#333333"/><Setter TargetName="Chrome" Property="BorderBrush" Value="#333333"/></Trigger>
+            <Trigger Property="IsChecked" Value="True">
+             <Setter TargetName="Chrome" Property="Background" Value="Transparent"/><Setter TargetName="Chrome" Property="BorderBrush" Value="#3D3D3D"/>
+             <Setter TargetName="Off" Property="Visibility" Value="Hidden"/><Setter TargetName="On" Property="Visibility" Value="Visible"/>
+            </Trigger>
+            <MultiTrigger>
+             <MultiTrigger.Conditions><Condition Property="IsChecked" Value="True"/><Condition Property="IsMouseOver" Value="True"/></MultiTrigger.Conditions>
+             <Setter TargetName="Chrome" Property="Background" Value="#262626"/><Setter TargetName="Chrome" Property="BorderBrush" Value="#575757"/>
+             <Setter TargetName="On" Property="Visibility" Value="Hidden"/><Setter TargetName="Undo" Property="Visibility" Value="Visible"/>
+            </MultiTrigger>
+            <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.4"/></Trigger>
+           </ControlTemplate.Triggers>
+          </ControlTemplate></Setter.Value></Setter>
+         </Style>
          <!-- The share window's drop zone: a dashed edge (gold while a file is dragged over it), and a click opens the file picker. -->
          <Style x:Key="DropButton" TargetType="Button">
           <Setter Property="Background" Value="{StaticResource Surface}"/><Setter Property="BorderBrush" Value="{StaticResource PanelEdge}"/>

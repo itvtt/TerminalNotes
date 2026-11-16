@@ -236,13 +236,16 @@ static string FindRelay()
 {
     for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
     {
-        // The relay lives in the ApiServer project next to this one (Projects\ApiServer\server); an older checkout kept it in relay\.
-            string candidate = Path.Combine(directory.FullName, "ApiServer", "server", "relay.py");
-            if (File.Exists(candidate)) return candidate;
-            candidate = Path.Combine(directory.FullName, "relay", "relay.py");
+        // The API server is in the launcher since 2026-11-14 (i-luncher\ApiManager\server, next to i-Projects); older checkouts
+        // kept it in the ApiServer project next to this one (Projects\ApiServer\server) or in relay\.
+        string candidate = Path.Combine(directory.FullName, "i-luncher", "ApiManager", "server", "relay.py");
+        if (File.Exists(candidate)) return candidate;
+        candidate = Path.Combine(directory.FullName, "ApiServer", "server", "relay.py");
+        if (File.Exists(candidate)) return candidate;
+        candidate = Path.Combine(directory.FullName, "relay", "relay.py");
         if (File.Exists(candidate)) return candidate;
     }
-    throw new FileNotFoundException("ApiServer\\server\\relay.py (the API server project next to TerminalNotes) was not found above the test folder.");
+    throw new FileNotFoundException("i-luncher\\ApiManager\\server\\relay.py (the API server, next to i-Projects) was not found above the test folder.");
 }
 
 // A client that connects from the given loopback address, so the relay sees requests from another PC.

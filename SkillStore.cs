@@ -659,8 +659,8 @@ internal sealed partial class SkillStoreDialog : Window
     private readonly IDisposable? _scope;
     // Cards in parts by category (2026-11-11 사용자: "스킬이 너무 많아지니 구분도 안되고 카테고리도 검색창하고 같은행이라 보기가
     // 불편해"): the search box alone on top, 전체 · 사용 중 · each category with its count on the left, and the cards under a heading
-    // per category, three a row in the usual window (more when wider, fewer when narrow), all as tall as the tallest. In a part the
-    // applied ones come first, then the starred, then the latest change.
+    // per category as app-store rows about 320 wide that fill the row (2026-11-13: "한행으로 … 앱스토어와 같은 방식"). In a part the applied
+    // ones come first, then the starred, then the latest change.
     private readonly StackPanel _sections = new() { Margin = new Thickness(6, 0, 18, 10) };
     private int _columns = 3;
     private readonly TextBox _search = new() { Tag = "검색", MaxLength = 80, Padding = new Thickness(11, 6, 11, 6), FontSize = 13 };
@@ -701,7 +701,7 @@ internal sealed partial class SkillStoreDialog : Window
         string caption = project is null ? "스킬" : "태스크 스킬";
         Title = project is null ? caption : $"{caption} · {projectName ?? Path.GetFileName(project)}";
         var screen = SystemParameters.WorkArea;
-        Width = Math.Min(1080, screen.Width - 40); Height = Math.Min(740, screen.Height - 40); MinWidth = 520; MinHeight = 360;
+        Width = Math.Min(940, screen.Width - 40); Height = Math.Min(680, screen.Height - 40); MinWidth = 520; MinHeight = 360;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         ShowInTaskbar = false;
         _share.SetResourceReference(StyleProperty, "OutlineButton");
@@ -717,14 +717,15 @@ internal sealed partial class SkillStoreDialog : Window
         _empty.Children.Add(_retry);
         // The search box alone on top; the categories on the left; the cards in parts by category.
         var tools = new Border { Margin = new Thickness(24, 14, 24, 10), Child = _search };
-        var side = new ScrollViewer { Content = _categories, Width = 184, Margin = new Thickness(24, 2, 6, 14),
+        var side = new ScrollViewer { Content = _categories, Width = 156, Margin = new Thickness(24, 2, 6, 14),
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
         var center = new Grid();
         var scroll = new ScrollViewer { Content = _sections, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
-        // About 330 wide a card: three in the usual window.
-        scroll.SizeChanged += (_, e) =>
+        // The lines of rows are as wide as the list less their 8 on the left, with or without its scroll bar.
+        _sections.SizeChanged += (_, e) =>
         {
-            _columns = Math.Max(1, (int)((e.NewSize.Width - 24) / 330));
+            if (!e.WidthChanged) return;
+            _columns = ColumnsFor(e.NewSize.Width - 8);
             foreach (var grid in _sections.Children.OfType<UniformGrid>()) grid.Columns = _columns;
         };
         center.Children.Add(scroll);
@@ -772,6 +773,10 @@ internal sealed partial class SkillStoreDialog : Window
     }
 
     private static string FilterOf(string shown) => shown == AllCategory ? "" : shown;
+
+    /// <summary>Rows about 320 wide (with their margins) fill a line of this width: never under 280, so never one long stretched row.</summary>
+    internal static int ColumnsFor(double width) =>
+        Math.Max(1, Math.Min((int)Math.Round(width / 320, MidpointRounding.AwayFromZero), (int)(width / 280)));
 
     internal async Task RefreshAsync()
     {
@@ -947,36 +952,51 @@ internal sealed partial class SkillStoreDialog : Window
             Margin = new Thickness(18, _sections.Children.Count == 0 ? 2 : 16, 18, 6) };
         heading.SetResourceReference(TextBlock.ForegroundProperty, "TextSecondary");
         AutomationProperties.SetAutomationId(heading, "SkillPartHeading");
-        var grid = new UniformGrid { Columns = _columns, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(12, 0, 0, 4) };
+        var grid = new UniformGrid { Columns = _columns, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(8, 0, 0, 4) };
         foreach (var card in cards) grid.Children.Add(card);
         _sections.Children.Add(heading);
         _sections.Children.Add(grid);
     }
 
-    // A card is one line (2026-11-12 사용자: "카드별로 너무 설명이 많아 보인다고 해야하나? 제목만 보여주고 디테일한건 클릭해야 보이게"):
-    // the title with its marks (a lock when only its author sees it, a link when it follows GitHub, a dot when it has a notice, the
-    // latest version's badge), the star, 업데이트 when the store has a newer version, ⋯ for everything else, and the switch. A click on
-    // the card opens its details under it (the description, the 출처, the date and the author); a right click opens the ⋯ menu.
+    // A skill is one row like an app store's list (2026-11-13 사용자: "아예 카드를 한행으로 못해? … 앱스토어와 같은 방식으로 만들어";
+    // before: "여백도 많고 … 너무 와이드해", and 2026-11-12 "제목만 보여주고 디테일한건 클릭해야 보이게"): a monogram icon, the title and
+    // under it a quiet line (the star, the latest version, the author, a gold dot for a notice, a lock when only its author sees it,
+    // a link when it follows GitHub, 업데이트 when the store has a newer version), then the one action (적용 / 적용 중) and ⋯ for the
+    // rest. A click on the row opens its details under it (the description, the 출처, the date and the author); a right click the menu.
     private Border Card(string title, string description, string name, InstalledSkills.Entry? local, StoreSkill? skill, bool global, bool globalOff)
     {
         bool applied = local is { Applied: true } || global && !globalOff, own = local is { FromStore: false };
         string? notice = local is { FromStore: true, Notice.Length: > 0 } ? local.Notice : null;
-        var layout = new Grid();
-        layout.ColumnDefinitions.Add(new ColumnDefinition());
-        layout.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        layout.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        layout.Children.Add(new TextBlock { Text = title, FontSize = 14, FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis,
-            VerticalAlignment = VerticalAlignment.Center, ToolTip = title });
-        var marks = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(6, 0, 0, 0) };
-        if (notice is not null) marks.Children.Add(NoticeDot(notice));
-        if (skill is { Private: true }) marks.Children.Add(Mark(StoreLook.LockGlyph, "비공개 · 나만 보고 쓰는 스킬"));
+        var line = new StackPanel { Orientation = Orientation.Horizontal };
+        if (skill is not null)
+        {
+            var star = new ToggleButton { IsChecked = _favorites.Contains(name), Width = 18, Height = 18, Margin = new Thickness(-2, 0, 4, 0) };
+            star.SetResourceReference(StyleProperty, "StoreStar");
+            AutomationProperties.SetName(star, "즐겨찾기 · " + title);
+            star.Click += (_, _) =>
+            {
+                SkillFavorites.Set(_favorites, name, star.IsChecked == true);
+                Render();
+            };
+            line.Children.Add(star);
+            line.Children.Add(VersionBadge(skill, local));
+            if (skill.Author is { Length: > 0 } author) line.Children.Add(Quiet("· " + author));
+        }
+        else line.Children.Add(Quiet("스토어 목록에 없음"));
+        if (notice is not null) line.Children.Add(NoticeDot(notice));
+        if (skill is { Private: true }) line.Children.Add(Mark(StoreLook.LockGlyph, "비공개 · 나만 보고 쓰는 스킬"));
         if (skill is { Source.Length: > 0 } linked)
-            marks.Children.Add(Mark(StoreLook.LinkGlyph, "깃허브 파일을 따라 자동 업데이트\n" + linked.Source + (linked.SourceError is { Length: > 0 } error ? "\n" + error : "")));
-        if (skill is not null) marks.Children.Add(VersionBadge(skill, local));
-        Grid.SetColumn(marks, 1);
-        layout.Children.Add(marks);
+            line.Children.Add(Mark(StoreLook.LinkGlyph, "깃허브 파일을 따라 자동 업데이트\n" + linked.Source + (linked.SourceError is { Length: > 0 } error ? "\n" + error : "")));
+        if (!global && local is { FromStore: true, Applied: true, Mode: SkillMode.Store } && skill is not null && skill.Version > local.Version)
+        {
+            var update = new Button { Content = "업데이트", ToolTip = $"v{local.Version} → v{skill.Version}", FontSize = 12, Height = 18, MinHeight = 0,
+                Padding = new Thickness(4, 0, 4, 0), Margin = new Thickness(2, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
+            update.SetResourceReference(StyleProperty, "AccentButton");
+            update.Click += async (_, _) => await ApplyAsync(skill, null);
+            line.Children.Add(update);
+        }
 
-        // What the card no longer shows: in the details, opened by a click.
+        // What the row does not show: in the details, opened by a click.
         var details = new StackPanel();
         details.Children.Add(DetailTitle(title));
         if (notice is not null) details.Children.Add(DetailText(notice, "Accent"));
@@ -991,63 +1011,131 @@ internal sealed partial class SkillStoreDialog : Window
             details.Children.Add(meta);
         }
 
-        var actions = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-        if (skill is not null)
-        {
-            var star = new ToggleButton { IsChecked = _favorites.Contains(name), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(2, 0, 0, 0) };
-            star.SetResourceReference(StyleProperty, "StoreStar");
-            AutomationProperties.SetName(star, "즐겨찾기 · " + title);
-            star.Click += (_, _) =>
-            {
-                SkillFavorites.Set(_favorites, name, star.IsChecked == true);
-                Render();
-            };
-            actions.Children.Add(star);
-        }
-        if (!global && local is { FromStore: true, Applied: true, Mode: SkillMode.Store } && skill is not null && skill.Version > local.Version)
-        {
-            var update = new Button { Content = "업데이트", ToolTip = $"v{local.Version} → v{skill.Version}", VerticalAlignment = VerticalAlignment.Center };
-            update.SetResourceReference(StyleProperty, "AccentButton");
-            update.Click += async (_, _) => await ApplyAsync(skill, null);
-            actions.Children.Add(update);
-        }
         var menu = Menu(name, title, local, skill);
-        var more = new Button { Content = StoreLook.Glyph(StoreLook.MoreGlyph, 16), Margin = new Thickness(2, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
-        more.SetResourceReference(StyleProperty, "IconButton");
-        AutomationProperties.SetName(more, "더 보기 · " + title);
-        more.Click += (_, _) => StoreLook.Open(menu, more);
-        actions.Children.Add(more);
-        // A disabled switch says why; a global skill's says it is global (off turns it off for this task only).
-        var toggle = new ToggleButton { IsChecked = applied, IsEnabled = !own && (global || applied || skill is not null), Margin = new Thickness(8, 0, 6, 0),
-            VerticalAlignment = VerticalAlignment.Center,
-            ToolTip = own ? "이 PC에서 직접 만든 같은 이름의 스킬이 있습니다." : global ? (globalOff ? "전역 스킬 · 이 태스크에서는 끔" : "전역 스킬 · 끄면 이 태스크에서만 빠집니다") : null };
-        toggle.SetResourceReference(StyleProperty, "StoreSwitch");
+        // A disabled action says why; a global skill's says it is global (해제 turns it off for this task only).
+        var toggle = new ToggleButton { IsChecked = applied, IsEnabled = !own && (global || applied || skill is not null),
+            ToolTip = own ? "이 PC에서 직접 만든 같은 이름의 스킬이 있습니다." : global ? (globalOff ? "전역 스킬 · 이 태스크에서는 끔" : "전역 스킬 · 해제하면 이 태스크에서만 빠집니다") : null };
         ToolTipService.SetShowOnDisabled(toggle, true);
         AutomationProperties.SetName(toggle, (_project is null ? "적용 · " : "이 태스크에 적용 · ") + title);
-        // The switch moves at once; the list is drawn again from what this PC then has.
+        // It changes at once; the list is drawn again from what this PC then has.
         toggle.Click += async (_, _) =>
         {
             if (global) SetGlobalOff(name, title, off: applied);
             else if (applied) await RemoveAsync(name, title);
             else if (skill is not null) await ApplyAsync(skill, null);
         };
-        actions.Children.Add(toggle);
-        Grid.SetColumn(actions, 2);
-        layout.Children.Add(actions);
+        string category = skill?.CategoryName ?? StoreSkill.OtherCategory;
+        var layout = RowLayout(title, (CategoryGlyph(category), category), line, toggle, MoreButton(menu, title));
         var card = CompactCard(layout, name, menu);
         AttachDetails(card, layout, details, menu);
         return card;
     }
 
-    // One line: the title on the left, the switch on the right (both kinds of card).
+    internal static TextBlock Quiet(string text)
+    {
+        var quiet = new TextBlock { Text = text, FontSize = 12, Margin = new Thickness(4, 0, 6, 0), VerticalAlignment = VerticalAlignment.Center,
+            TextTrimming = TextTrimming.CharacterEllipsis };
+        quiet.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+        return quiet;
+    }
+
+    /// <summary>A row of both kinds of list: the icon, the title over its quiet line, the action (a toggle, drawn as the store's pill)
+    /// and ⋯; a hairline under it from the title on, like an app store's list.</summary>
+    internal static Grid RowLayout(string title, (string Glyph, string Tip) icon, Panel line, ToggleButton action, Button more)
+    {
+        var text = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) };
+        text.Children.Add(new TextBlock { Text = title, FontSize = 14, FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis,
+            ToolTip = title });
+        line.Margin = new Thickness(0, 3, 0, 0);
+        line.Height = 18;
+        line.ClipToBounds = true;
+        text.Children.Add(line);
+        action.SetResourceReference(StyleProperty, "StorePill");
+        action.VerticalAlignment = VerticalAlignment.Center;
+        more.Margin = new Thickness(4, 0, 0, 0);
+        var content = new Grid { Margin = new Thickness(0, 9, 0, 9) };
+        content.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        content.ColumnDefinitions.Add(new ColumnDefinition());
+        content.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        content.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        // The title first in the tree (what reads the row reads it first), the icon left of it.
+        Grid.SetColumn(text, 1);
+        content.Children.Add(text);
+        content.Children.Add(RowIcon(icon.Glyph, icon.Tip));
+        Grid.SetColumn(action, 2);
+        content.Children.Add(action);
+        Grid.SetColumn(more, 3);
+        content.Children.Add(more);
+        var hairline = new Border { Height = 1, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(52, 0, 0, 0), IsHitTestVisible = false };
+        hairline.SetResourceReference(Border.BackgroundProperty, "Line");
+        var layout = new Grid();
+        layout.Children.Add(content);
+        layout.Children.Add(hairline);
+        return layout;
+    }
+
+    // The row's icon is its category's (2026-11-13 사용자: "앞글자로 스킬아이콘을 만들지말고 카테고리를 적용해"): a gold glyph on a quiet
+    // tile, the same for every skill of a category, its name in the tooltip.
+    private static Border RowIcon(string glyph, string tip)
+    {
+        var mark = StoreLook.Glyph(glyph, 18);
+        mark.HorizontalAlignment = HorizontalAlignment.Center;
+        mark.VerticalAlignment = VerticalAlignment.Center;
+        mark.SetResourceReference(TextBlock.ForegroundProperty, "Accent");
+        var icon = new Border { Child = mark, Width = 40, Height = 40, CornerRadius = new CornerRadius(10), BorderThickness = new Thickness(1),
+            Margin = new Thickness(0, 0, 12, 0), VerticalAlignment = VerticalAlignment.Center, ToolTip = tip,
+            Background = new Media.LinearGradientBrush(Media.Color.FromRgb(0x2C, 0x2C, 0x2C), Media.Color.FromRgb(0x1E, 0x1E, 0x1E), 90) };
+        icon.SetResourceReference(Border.BorderBrushProperty, "ButtonLine");
+        AutomationProperties.SetName(icon, "카테고리 · " + tip);
+        return icon;
+    }
+
+    // A category's glyph (Segoe Fluent Icons): by what its name says, else one picked steadily from its name, so a category the
+    // store does not know still keeps one icon of its own.
+    private static readonly (string[] Words, string Glyph)[] CategoryGlyphs =
+    [
+        (["데이터", "data", "sql", "쿼리", "db", "디비"], "\uEE94"),
+        (["보고", "리포트", "report", "차트", "지표", "분석"], "\uE9F9"),
+        (["코드", "code", "개발", "리뷰", "review", "프로그래밍"], "\uE943"),
+        (["배포", "릴리스", "릴리즈", "release", "deploy", "빌드", "build"], "\uE898"),
+        (["문서", "doc", "가이드", "guide", "안내", "readme", "글쓰기"], "\uE8A5"),
+        (["테스트", "test", "검증", "qa", "품질"], "\uE9D5"),
+        (["보안", "security", "권한", "인증"], "\uEA18"),
+        (["운영", "서버", "인프라", "ops", "모니터", "장애"], "\uE9D9"),
+        (["디자인", "design", "ui", "화면", "ux"], "\uE790"),
+        (["설정", "config", "환경"], "\uE713"),
+        (["자동화", "automation", "스크립트", "script"], "\uE9F5"),
+        (["학습", "교육", "공부", "learn"], "\uE7BE"),
+        ([StoreSkill.OtherCategory, "other", "etc"], "\uE8EC"),
+    ];
+    private static readonly string[] SpareGlyphs = ["\uE8B7", "\uEA86", "\uE81E", "\uF0E3", "\uE7C1", "\uE8F1", "\uEB05", "\uE8FD"];
+
+    internal static string CategoryGlyph(string category)
+    {
+        string name = category.Trim().ToLowerInvariant();
+        foreach (var (words, glyph) in CategoryGlyphs)
+            if (words.Any(word => name.Contains(word, StringComparison.OrdinalIgnoreCase))) return glyph;
+        // Not string.GetHashCode: it changes with every start.
+        int sum = name.Aggregate(0, (total, character) => unchecked(total * 31 + character));
+        return SpareGlyphs[(int)((uint)sum % (uint)SpareGlyphs.Length)];
+    }
+
+    internal static Button MoreButton(ContextMenu menu, string title)
+    {
+        var more = new Button { Content = StoreLook.Glyph(StoreLook.MoreGlyph, 14), Width = 28, Height = 26, VerticalAlignment = VerticalAlignment.Center };
+        more.SetResourceReference(StyleProperty, "IconButton");
+        AutomationProperties.SetName(more, "더 보기 · " + title);
+        more.Click += (_, _) => StoreLook.Open(menu, more);
+        return more;
+    }
+
+    // The row: no box, a quiet surface under the pointer; a click opens its details, a right click its menu.
     internal static Border CompactCard(Grid layout, string name, ContextMenu menu)
     {
-        var card = new Border { Child = layout, Tag = name, CornerRadius = new CornerRadius(10), Padding = new Thickness(14, 6, 8, 6),
-            Margin = new Thickness(6, 4, 6, 4), MinHeight = 48, BorderThickness = new Thickness(1), ContextMenu = menu, Cursor = Cursors.Hand };
-        card.SetResourceReference(Border.BackgroundProperty, "Surface");
-        card.SetResourceReference(Border.BorderBrushProperty, "ButtonLine");
-        card.MouseEnter += (_, _) => card.SetResourceReference(Border.BorderBrushProperty, "ButtonLineHover");
-        card.MouseLeave += (_, _) => card.SetResourceReference(Border.BorderBrushProperty, "ButtonLine");
+        var card = new Border { Child = layout, Tag = name, CornerRadius = new CornerRadius(8), Padding = new Thickness(6, 0, 4, 0),
+            Margin = new Thickness(4, 0, 4, 0), Background = Media.Brushes.Transparent, ContextMenu = menu, Cursor = Cursors.Hand };
+        card.MouseEnter += (_, _) => card.SetResourceReference(Border.BackgroundProperty, "Surface");
+        card.MouseLeave += (_, _) => card.Background = Media.Brushes.Transparent;
         return card;
     }
 
@@ -1112,7 +1200,7 @@ internal sealed partial class SkillStoreDialog : Window
     // A notice from the store about this skill (it changed, it went away …): a gold dot on the card, the text in its details.
     private static Border NoticeDot(string notice)
     {
-        var dot = new Border { Width = 8, Height = 8, CornerRadius = new CornerRadius(4), Margin = new Thickness(0, 0, 6, 0), ToolTip = notice,
+        var dot = new Border { Width = 7, Height = 7, CornerRadius = new CornerRadius(3.5), Margin = new Thickness(0, 0, 6, 0), ToolTip = notice,
             VerticalAlignment = VerticalAlignment.Center };
         dot.SetResourceReference(Border.BackgroundProperty, "Accent");
         AutomationProperties.SetName(dot, "알림 · " + notice);
@@ -1163,17 +1251,14 @@ internal sealed partial class SkillStoreDialog : Window
         Render();
     }
 
-    // The latest version as a small pill left of the star; an applied other version says which one this PC has.
+    // The latest version, quiet on the row's second line after the star; an applied other version says which one this PC has.
     private static Border VersionBadge(StoreSkill skill, InstalledSkills.Entry? local)
     {
-        var text = new TextBlock { Text = $"v{skill.Version}", FontSize = 11, FontWeight = FontWeights.SemiBold };
-        text.SetResourceReference(TextBlock.ForegroundProperty, "Accent");
-        var badge = new Border { Child = text, CornerRadius = new CornerRadius(9), BorderThickness = new Thickness(1), Padding = new Thickness(7, 1, 7, 1),
-            Margin = new Thickness(2, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center,
+        var text = new TextBlock { Text = $"v{skill.Version}", FontSize = 12 };
+        text.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+        var badge = new Border { Child = text, VerticalAlignment = VerticalAlignment.Center, Background = Media.Brushes.Transparent,
             ToolTip = local is { FromStore: true, Applied: true, Version: > 0 } && local.Version != skill.Version
                 ? $"최신 v{skill.Version} · 이 PC는 v{local.Version} 적용 중" : $"최신 v{skill.Version}" };
-        badge.SetResourceReference(Border.BackgroundProperty, "SurfaceElevated");
-        badge.SetResourceReference(Border.BorderBrushProperty, "ButtonLine");
         AutomationProperties.SetName(badge, "버전 " + text.Text);
         return badge;
     }
@@ -1181,7 +1266,8 @@ internal sealed partial class SkillStoreDialog : Window
     private static TextBlock Mark(string glyph, string tip)
     {
         var mark = StoreLook.Glyph(glyph, 12);
-        mark.Margin = new Thickness(0, 0, 4, 0);
+        mark.Margin = new Thickness(0, 0, 6, 0);
+        mark.VerticalAlignment = VerticalAlignment.Center;
         mark.ToolTip = tip;
         mark.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
         return mark;

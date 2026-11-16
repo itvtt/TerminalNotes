@@ -16,16 +16,24 @@ using ConfigFile = TerminalNotes.Services.OpenCodeConfigFile;
 // The skill store end to end: the real relay (relay\relay.py) on a loopback port with its own .env and folders, the
 // app's store client, and the store window's one-click apply/remove, versions and my own instructions in an isolated
 // skills folder. 사용자 지시: 버전별 이력, 최신만 표시, 버전을 골라 적용, 기본 + 내 지침, 새 버전을 적용해도 내가 적은 것은 유지.
-internal static class Program
+internal static partial class Program
 {
     private static int _exitCode;
 
     [STAThread]
-    private static int Main()
+    private static int Main(string[] args)
     {
         var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
         app.Startup += async (_, _) =>
         {
+            // --preview: the store window with many sample skills to look at (Preview.cs); --preview-shot saves it and quits.
+            if (args.Contains("--preview") || args.Contains("--preview-shot"))
+            {
+                try { await PreviewAsync(interactive: args.Contains("--preview")); }
+                catch (Exception exception) { _exitCode = 1; Console.Error.WriteLine("FAIL: " + exception); }
+                finally { app.Shutdown(_exitCode); }
+                return;
+            }
             try
             {
                 await RunAsync();
@@ -67,20 +75,8 @@ internal static class Program
         await CheckOpenCodeConfigAsync(fixture);
         int port = FreePort();
         const string key = "skill-store-test-key", admin = "skill-store-admin";
-        // The relay reads no .env: this run's settings go in as --set.
-        string[] settings = [$"RELAY_PORT={port}", $"RELAY_INGEST_KEY={key}", $"RELAY_ADMIN_PASSWORD={admin}", "RELAY_GITHUB_SYNC_SECONDS=2",
-            $"RELAY_DATA_DIR={Path.Combine(fixture, "reports")}", $"RELAY_SKILLS_DIR={Path.Combine(fixture, "store")}", $"RELAY_PLUGINS_DIR={Path.Combine(fixture, "plugin-store")}",
-            $"RELAY_ANNOUNCEMENTS_DIR={Path.Combine(fixture, "announcements")}", $"RELAY_LOG_FILE={Path.Combine(fixture, "relay.log")}"];
-        var start = new ProcessStartInfo("python") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true,
-            RedirectStandardError = true, WorkingDirectory = fixture };
-        foreach (string argument in new[] { "-X", "utf8", FindRelay() }.Concat(settings.SelectMany(setting => new[] { "--set", setting }))
-            .Concat(["--bind", "127.0.0.1", "--quiet"])) start.ArgumentList.Add(argument);
-        using var server = Process.Start(start)!;
-        var relayOutput = new StringBuilder();
-        server.OutputDataReceived += (_, e) => { lock (relayOutput) relayOutput.AppendLine(e.Data); };
-        server.ErrorDataReceived += (_, e) => { lock (relayOutput) relayOutput.AppendLine(e.Data); };
-        server.BeginOutputReadLine();
-        server.BeginErrorReadLine();
+        var (server, relayOutput) = StartRelay(fixture, port, key, admin);
+        using var relayProcess = server;
         SkillStoreDialog? dialog = null;
         try
         {
@@ -333,16 +329,17 @@ internal static class Program
                 "The file's own title line was not dropped, or the instructions are missing: " + trinoText);
             share.Close();
             await dialog.RefreshAsync();
-            // The card is one line: the title and the version's badge (2026-11-12, "제목만 보여주고 디테일한건 클릭해야 보이게"). A click opens
-            // its details under it: the first line of the instructions (the description only repeats the title) and the date · author.
+            // A skill is one app-store row with the title first (2026-11-12, "제목만 보여주고 디테일한건 클릭해야 보이게"; 2026-11-13
+            // "한행으로 … 앱스토어와 같은 방식"). A click opens its details under it: the first line of the instructions (the description only
+            // repeats the title) and the date · author.
             var trinoBorder = Card(dialog, trino.Name)!;
             var trinoDetails = Descendants(trinoBorder).OfType<Popup>().Single();
             var trinoRow = Descendants(trinoBorder).TakeWhile(node => node is not Popup).OfType<TextBlock>().ToList();
             var trinoCard = Descendants(trinoDetails).OfType<TextBlock>().ToList();
             string byline = trino.ShownDate!.Value.ToLocalTime().ToString("yyyy-MM-dd") + " · " + user;
             Require(trinoRow[0].Text == "Trino 가이드" && trinoRow.All(line => line.Text != "Trino로 조회한다." && line.Text != byline) &&
-                trinoBorder.ActualHeight < 70 && !trinoDetails.IsOpen,
-                "The card is not one line with the title alone: " + string.Join(" | ", trinoRow.Select(line => line.Text)) + $" ({trinoBorder.ActualHeight:0}px)");
+                trinoBorder.ActualHeight < 66 && trinoBorder.ActualWidth < 440 && !trinoDetails.IsOpen,
+                $"The skill is not one row with the title first ({trinoBorder.ActualWidth:0}px wide): " + string.Join(" | ", trinoRow.Select(line => line.Text)) + $" ({trinoBorder.ActualHeight:0}px)");
             Require(trinoCard.Any(line => line.Text == "Trino로 조회한다.") && trinoCard.Any(line => line.Text == byline),
                 "The details' description or date · author: " + string.Join(" | ", trinoCard.Select(line => line.Text)));
             // A real click: MouseUp bubbles from the title and each element on the way raises its own MouseLeftButtonUp. Without a real
@@ -368,9 +365,27 @@ internal static class Program
             var trinoStar = Descendants(Card(dialog, trino.Name)!).OfType<ToggleButton>()
                 .Single(button => System.Windows.Automation.AutomationProperties.GetName(button).StartsWith("즐겨찾기", StringComparison.Ordinal));
             var card = Card(dialog, trino.Name)!;
-            double badgeRight = trinoBadge?.TranslatePoint(new Point(trinoBadge.ActualWidth, 0), card).X ?? double.NaN, starLeft = trinoStar.TranslatePoint(new Point(0, 0), card).X;
-            Require(trinoBadge is { Child: TextBlock { Text: "v1" } } && badgeRight <= starLeft && starLeft - badgeRight < 16,
-                $"The version badge is not right before the star: {badgeRight} / {starLeft}");
+            var trinoSwitch = SwitchIn(dialog, trino.Name);
+            Point At(FrameworkElement element) => element.TranslatePoint(new Point(element.ActualWidth / 2, element.ActualHeight / 2), card);
+            var trinoTitle = Descendants(card).OfType<TextBlock>().First();
+            Point badgeAt = trinoBadge is null ? new Point(double.NaN, double.NaN) : At(trinoBadge), starAt = At(trinoStar), switchAt = At(trinoSwitch),
+                titleAt = At(trinoTitle), titleLeft = trinoTitle.TranslatePoint(new Point(0, 0), card);
+            // Rows about 320 wide fill the line, never under 280 and never one stretched row.
+            Require(SkillStoreDialog.ColumnsFor(714) == 2 && SkillStoreDialog.ColumnsFor(854) == 3 && SkillStoreDialog.ColumnsFor(1700) == 5 &&
+                SkillStoreDialog.ColumnsFor(500) == 1 && SkillStoreDialog.ColumnsFor(150) == 1, "The rows a line for a width.");
+            // The icon is the category's, not a letter of the title (2026-11-13): the same for a category, named in its tooltip.
+            var trinoIcon = Descendants(card).OfType<Border>().Single(border =>
+                System.Windows.Automation.AutomationProperties.GetName(border).StartsWith("카테고리 · ", StringComparison.Ordinal));
+            Require(System.Windows.Automation.AutomationProperties.GetName(trinoIcon) == "카테고리 · " + trino.CategoryName &&
+                trinoIcon.Child is TextBlock { Text: var iconGlyph } && iconGlyph == SkillStoreDialog.CategoryGlyph(trino.CategoryName) &&
+                SkillStoreDialog.CategoryGlyph("데이터") == "\uEE94" && SkillStoreDialog.CategoryGlyph("월간 보고서") == "\uE9F9" &&
+                SkillStoreDialog.CategoryGlyph("기타") == "\uE8EC" && SkillStoreDialog.CategoryGlyph("회계") == SkillStoreDialog.CategoryGlyph(" 회계 "),
+                "The row's icon is not its category's: " + System.Windows.Automation.AutomationProperties.GetName(trinoIcon));
+            // The icon left of the title, the quiet line (star, then the version) under the title, the action on the right at the
+            // middle of the row.
+            Require(trinoBadge is { Child: TextBlock { Text: "v1" } } && titleLeft.X > 40 && starAt.Y > titleAt.Y + 12 && Math.Abs(badgeAt.Y - starAt.Y) < 4 &&
+                starAt.X < badgeAt.X && starAt.X < titleLeft.X + 16 && switchAt.X > card.ActualWidth * 0.6 && Math.Abs(switchAt.Y - card.ActualHeight / 2) < 4,
+                $"The row is not icon · title over star · version · action: title {titleAt} star {starAt} badge {badgeAt} action {switchAt}");
             await SaveImage(dialog, "store-cards.png");
             // × under the pointer, without moving the user's pointer: capturing the mouse makes the button the one it is over.
             var close = Buttons(dialog).Single(button => System.Windows.Automation.AutomationProperties.GetName(button) == "닫기");
@@ -1204,6 +1219,25 @@ internal static class Program
         throw new TimeoutException("Timed out waiting for " + what + ".");
     }
 
+    // The real relay on a loopback port; it reads no .env, so this run's settings go in as --set.
+    private static (Process Server, StringBuilder Output) StartRelay(string fixture, int port, string key, string admin, params string[] extra)
+    {
+        string[] settings = [.. extra, $"RELAY_PORT={port}", $"RELAY_INGEST_KEY={key}", $"RELAY_ADMIN_PASSWORD={admin}", "RELAY_GITHUB_SYNC_SECONDS=2",
+            $"RELAY_DATA_DIR={Path.Combine(fixture, "reports")}", $"RELAY_SKILLS_DIR={Path.Combine(fixture, "store")}", $"RELAY_PLUGINS_DIR={Path.Combine(fixture, "plugin-store")}",
+            $"RELAY_ANNOUNCEMENTS_DIR={Path.Combine(fixture, "announcements")}", $"RELAY_LOG_FILE={Path.Combine(fixture, "relay.log")}"];
+        var start = new ProcessStartInfo("python") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true,
+            RedirectStandardError = true, WorkingDirectory = fixture };
+        foreach (string argument in new[] { "-X", "utf8", FindRelay() }.Concat(settings.SelectMany(setting => new[] { "--set", setting }))
+            .Concat(["--bind", "127.0.0.1", "--quiet"])) start.ArgumentList.Add(argument);
+        var server = Process.Start(start)!;
+        var output = new StringBuilder();
+        server.OutputDataReceived += (_, e) => { lock (output) output.AppendLine(e.Data); };
+        server.ErrorDataReceived += (_, e) => { lock (output) output.AppendLine(e.Data); };
+        server.BeginOutputReadLine();
+        server.BeginErrorReadLine();
+        return (server, output);
+    }
+
     private static int FreePort()
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
@@ -1217,13 +1251,16 @@ internal static class Program
     {
         for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
         {
-            // The relay lives in the ApiServer project next to this one (Projects\ApiServer\server); an older checkout kept it in relay\.
-            string candidate = Path.Combine(directory.FullName, "ApiServer", "server", "relay.py");
+            // The API server is in the launcher since 2026-11-14 (i-luncher\ApiManager\server, next to i-Projects); older checkouts
+            // kept it in the ApiServer project next to this one (Projects\ApiServer\server) or in relay\.
+            string candidate = Path.Combine(directory.FullName, "i-luncher", "ApiManager", "server", "relay.py");
+            if (File.Exists(candidate)) return candidate;
+            candidate = Path.Combine(directory.FullName, "ApiServer", "server", "relay.py");
             if (File.Exists(candidate)) return candidate;
             candidate = Path.Combine(directory.FullName, "relay", "relay.py");
             if (File.Exists(candidate)) return candidate;
         }
-        throw new FileNotFoundException("ApiServer\\server\\relay.py (the API server project next to TerminalNotes) was not found above the test folder.");
+        throw new FileNotFoundException("i-luncher\\ApiManager\\server\\relay.py (the API server, next to i-Projects) was not found above the test folder.");
     }
 
     private static void Require(bool condition, string message)

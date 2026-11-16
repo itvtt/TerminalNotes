@@ -62,6 +62,15 @@ internal static class Program
     // error) while smaller allocations work, and the guard names it.
     private static async Task MemoryGuard()
     {
+        // The budget for all tasks comes from what Windows can still commit, not free RAM, and always leaves 1 GB to grow while
+        // Windows has it (2026-11-13: with little free RAM it sat at what the tasks used, and a working OpenCode took no keys).
+        const long GB = 1024L * 1024 * 1024, MB = 1024L * 1024;
+        Assert(TaskMemoryGuard.BudgetFor(3 * GB, (long)(1.5 * GB), 16 * GB, launching: false) == 4 * GB &&
+            TaskMemoryGuard.BudgetFor(3 * GB, 6 * GB, 8 * GB, launching: false) == 3 * GB + 6 * GB - 768 * MB &&
+            TaskMemoryGuard.BudgetFor(3 * GB, 500 * MB, 8 * GB, launching: false) == 3 * GB + 244 * MB &&
+            TaskMemoryGuard.BudgetFor(3 * GB, (long)(1.5 * GB), 16 * GB, launching: true) == 4 * GB + 1536 * MB &&
+            TaskMemoryGuard.BudgetFor(0, 0, 8 * GB, launching: false) == 256 * MB,
+            "The tasks' memory budget: " + TaskMemoryGuard.BudgetFor(3 * GB, (long)(1.5 * GB), 16 * GB, launching: false) / MB + " MB with 1.5 GB to commit");
         AppContext.SetSwitch("TerminalNotes.TaskMemoryGuard", true);
         AppContext.SetData("TerminalNotes.TaskMemoryGuard.ProcessLimitMB", "300");
         var hits = new ConcurrentQueue<TaskMemoryGuard.LimitHit>();
