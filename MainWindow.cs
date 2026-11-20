@@ -1634,6 +1634,7 @@ public partial class MainWindow
     {
         if (!IsMultiProjectTask(project)) throw new InvalidOperationException("역할별 멀티 실행은 지원하지 않습니다. 프로젝트의 싱글 터미널을 사용하세요.");
         if (HasExternalTerminal(project)) throw new InvalidOperationException(ExternalTerminalBlockReason);
+        ILuncher.AppKit.AppUsage.Count("task");
         project = CanonicalProjectPath(project);
         bool continuousImprovement = _projectTaskContinuousModes.GetValueOrDefault(project);
         DateTimeOffset? improvementUntil = _projectTaskImprovementUntil.GetValueOrDefault(project);

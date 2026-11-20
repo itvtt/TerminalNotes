@@ -74,6 +74,8 @@ public partial class App : Application
             }
             ApplicationDiagnostics.BeginSession();
             _diagnosticsStarted = true;
+            // 사용 시간 · 태스크 실행 집계 (AppKit\AppUsage.cs → API 서버, ImPerformance 성과 계산용)
+            ILuncher.AppKit.AppUsage.Start(app: "TerminalNotes");
             DispatcherUnhandledException += (_, args) =>
             {
                 _fatalExceptionObserved = true;
