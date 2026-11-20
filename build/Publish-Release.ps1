@@ -103,7 +103,7 @@ foreach ($intermediate in 'bin', 'obj') {
     if (Test-Path $path) { Remove-Item $path -Recurse -Force }
 }
 
-# The relay server moved to the i-luncher repository (ApiManager\server\relay.py): the launcher's API Manager deploys it.
+# The relay server moved to the i-luncher repository (CDEP\relay.py): the launcher's admin menu deploys it.
 
 Write-Host ("Release zip: {0} ({1:N1} MB, {2} files)" -f $zip, ((Get-Item $zip).Length / 1MB), @(Get-ChildItem $publish -Recurse -File).Count)
 Write-Host ("Installer:   {0} ({1:N1} MB)" -f $setup, ((Get-Item $setup).Length / 1MB))
