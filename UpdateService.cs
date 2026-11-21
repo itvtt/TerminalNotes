@@ -44,13 +44,43 @@ public sealed class UpdateService(UpdateSettings settings, HttpMessageHandler? h
             string api = Read("Api");
             string asset = Read("Asset");
             string token = Read("Token");
-            return new UpdateSettings(api.Length == 0 ? "https://api.github.com" : api.TrimEnd('/'), repository,
-                token.Length == 0 ? null : token, asset.Length == 0 ? UpdateSettings.DefaultAsset : asset);
+            api = api.Length == 0 ? "https://api.github.com" : api.TrimEnd('/');
+            return new UpdateSettings(api, repository,
+                token.Length == 0 ? LauncherToken(api) : token, asset.Length == 0 ? UpdateSettings.DefaultAsset : asset);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
         {
             return null;
         }
+    }
+
+    // update.json 에 토큰이 없으면: 이 PC 사용자가 i-luncher 설정에 넣은 그 호스트의 GitHub 토큰 (i-luncher AppKit 의 LauncherToken 과 같음).
+    // 비공개 저장소의 릴리스를 GitHub 에 바로 묻는 데 씀. 런처와 같은 사용자 · PC 에서만 풀림. 없으면 null (공개 저장소는 토큰 없이)
+    internal static string? LauncherToken(string api)
+    {
+        if (!Uri.TryCreate(api, UriKind.Absolute, out var uri)) return null;
+        string host = (uri.IsDefaultPort ? uri.Host : $"{uri.Host}:{uri.Port}").ToLowerInvariant();
+        if (host is "api.github.com" or "www.github.com") host = "github.com";
+        try
+        {
+            string data = Environment.GetEnvironmentVariable("ILUNCHER_DATA_DIR") is { Length: > 0 } folder
+                ? folder : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "i-luncher");
+            string path = Path.Combine(data, "settings.json");
+            if (!File.Exists(path)) return null;
+            using var document = JsonDocument.Parse(File.ReadAllText(path));
+            if (document.RootElement.ValueKind != JsonValueKind.Object || !document.RootElement.TryGetProperty("Tokens", out var tokens)
+                || tokens.ValueKind != JsonValueKind.Object) return null;
+            foreach (var item in tokens.EnumerateObject())
+                if (string.Equals(item.Name, host, StringComparison.OrdinalIgnoreCase) && item.Value.GetString() is { Length: > 0 } stored)
+                {
+                    byte[] plain = System.Security.Cryptography.ProtectedData.Unprotect(Convert.FromBase64String(stored),
+                        Encoding.UTF8.GetBytes("i-luncher/github-token/v1"), System.Security.Cryptography.DataProtectionScope.CurrentUser);
+                    return Encoding.UTF8.GetString(plain).Trim() is { Length: > 0 } token ? token : null;
+                }
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException or FormatException
+            or InvalidOperationException or System.Security.Cryptography.CryptographicException) { }
+        return null;
     }
 
     /// <summary>
