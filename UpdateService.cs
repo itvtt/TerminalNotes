@@ -46,7 +46,7 @@ public sealed class UpdateService(UpdateSettings settings, HttpMessageHandler? h
             string token = Read("Token");
             api = api.Length == 0 ? "https://api.github.com" : api.TrimEnd('/');
             return new UpdateSettings(api, repository,
-                token.Length == 0 ? LauncherToken(api) : token, asset.Length == 0 ? UpdateSettings.DefaultAsset : asset);
+                token.Length == 0 ? LauncherToken(api, repository) : token, asset.Length == 0 ? UpdateSettings.DefaultAsset : asset);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
         {
@@ -54,9 +54,10 @@ public sealed class UpdateService(UpdateSettings settings, HttpMessageHandler? h
         }
     }
 
-    // update.json 에 토큰이 없으면: 이 PC 사용자가 i-luncher 설정에 넣은 그 호스트의 GitHub 토큰 (i-luncher AppKit 의 LauncherToken 과 같음).
+    // update.json 에 토큰이 없으면: 이 PC 사용자가 i-luncher 에서 이 프로젝트에 넣은 토큰(앱 우클릭 → 토큰…, RepositoryTokens "호스트/소유자/이름"),
+    // 없으면 그 호스트의 토큰(Tokens, 마스터 PC 의 git 로그인). i-luncher AppKit 의 LauncherToken 과 같음.
     // 비공개 저장소의 릴리스를 GitHub 에 바로 묻는 데 씀. 런처와 같은 사용자 · PC 에서만 풀림. 없으면 null (공개 저장소는 토큰 없이)
-    internal static string? LauncherToken(string api)
+    internal static string? LauncherToken(string api, string? repository = null)
     {
         if (!Uri.TryCreate(api, UriKind.Absolute, out var uri)) return null;
         string host = (uri.IsDefaultPort ? uri.Host : $"{uri.Host}:{uri.Port}").ToLowerInvariant();
@@ -68,15 +69,19 @@ public sealed class UpdateService(UpdateSettings settings, HttpMessageHandler? h
             string path = Path.Combine(data, "settings.json");
             if (!File.Exists(path)) return null;
             using var document = JsonDocument.Parse(File.ReadAllText(path));
-            if (document.RootElement.ValueKind != JsonValueKind.Object || !document.RootElement.TryGetProperty("Tokens", out var tokens)
-                || tokens.ValueKind != JsonValueKind.Object) return null;
-            foreach (var item in tokens.EnumerateObject())
-                if (string.Equals(item.Name, host, StringComparison.OrdinalIgnoreCase) && item.Value.GetString() is { Length: > 0 } stored)
-                {
-                    byte[] plain = System.Security.Cryptography.ProtectedData.Unprotect(Convert.FromBase64String(stored),
-                        Encoding.UTF8.GetBytes("i-luncher/github-token/v1"), System.Security.Cryptography.DataProtectionScope.CurrentUser);
-                    return Encoding.UTF8.GetString(plain).Trim() is { Length: > 0 } token ? token : null;
-                }
+            if (document.RootElement.ValueKind != JsonValueKind.Object) return null;
+            string project = repository is { Length: > 0 } ? (host + "/" + repository.Trim('/')).ToLowerInvariant() : "";
+            foreach (var (property, key) in new[] { ("RepositoryTokens", project), ("Tokens", host) })
+            {
+                if (key.Length == 0 || !document.RootElement.TryGetProperty(property, out var tokens) || tokens.ValueKind != JsonValueKind.Object) continue;
+                foreach (var item in tokens.EnumerateObject())
+                    if (string.Equals(item.Name, key, StringComparison.OrdinalIgnoreCase) && item.Value.GetString() is { Length: > 0 } stored)
+                    {
+                        byte[] plain = System.Security.Cryptography.ProtectedData.Unprotect(Convert.FromBase64String(stored),
+                            Encoding.UTF8.GetBytes("i-luncher/github-token/v1"), System.Security.Cryptography.DataProtectionScope.CurrentUser);
+                        if (Encoding.UTF8.GetString(plain).Trim() is { Length: > 0 } token) return token;
+                    }
+            }
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException or FormatException
             or InvalidOperationException or System.Security.Cryptography.CryptographicException) { }
