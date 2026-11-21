@@ -512,9 +512,6 @@
                     Style="{StaticResource GoldButton}"/>
         </StackPanel>
     </Grid>
-    <!-- A faint credit on the bottom edge; it never moves the buttons. -->
-    <TextBlock x:Name="CreditText" Text="made by jy01.ahn" FontSize="10" Foreground="{StaticResource Muted}" Opacity="0.55"
-               HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,18,4" IsHitTestVisible="False"/>
     </Grid>
     </Border>
 </Window>

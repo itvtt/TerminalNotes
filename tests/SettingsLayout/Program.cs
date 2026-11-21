@@ -251,10 +251,7 @@ internal static class Program
         var bounds = footer.TransformToAncestor(window).TransformBounds(new Rect(footer.RenderSize));
         Check(bounds.Top >= 0 && bounds.Bottom <= window.ActualHeight && footer.ActualHeight > 30,
             "save and cancel footer stays completely visible");
-        var credit = (FrameworkElement)window.FindName("CreditText");
-        var creditBounds = credit.TransformToAncestor(window).TransformBounds(new Rect(credit.RenderSize));
-        Check(creditBounds.Top >= bounds.Bottom - 0.5 && creditBounds.Bottom <= window.ActualHeight,
-            "the credit sits faintly on the bottom edge, below the buttons");
+        Check(window.FindName("CreditText") is null, "no author credit on the window");
     }
 
     private static void CheckVisibleInScroll(FrameworkElement element, ScrollViewer scroll)
