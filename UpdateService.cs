@@ -64,10 +64,12 @@ public sealed class UpdateService(UpdateSettings settings, HttpMessageHandler? h
         if (host is "api.github.com" or "www.github.com") host = "github.com";
         try
         {
-            string data = Environment.GetEnvironmentVariable("ILUNCHER_DATA_DIR") is { Length: > 0 } folder
-                ? folder : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "i-luncher");
-            string path = Path.Combine(data, "settings.json");
-            if (!File.Exists(path)) return null;
+            // 런처 설정 폴더: C:\i-luncher, 그 폴더를 쓸 수 없는 PC 와 예전 런처는 %LOCALAPPDATA%\i-luncher
+            string? path = (Environment.GetEnvironmentVariable("ILUNCHER_DATA_DIR") is { Length: > 0 } folder
+                    ? new[] { folder }
+                    : new[] { @"C:\i-luncher", Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "i-luncher") })
+                .Select(data => Path.Combine(data, "settings.json")).FirstOrDefault(File.Exists);
+            if (path is null) return null;
             using var document = JsonDocument.Parse(File.ReadAllText(path));
             if (document.RootElement.ValueKind != JsonValueKind.Object) return null;
             string project = repository is { Length: > 0 } ? (host + "/" + repository.Trim('/')).ToLowerInvariant() : "";
