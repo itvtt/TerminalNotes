@@ -13,10 +13,12 @@
 //   running = 가동 시간(초, Resident 만): 앱이 떠 있고 사용자가 PC 앞에 있음 (잠금 아님, 입력 5분 안)
 //   launch  = 실행 횟수
 // 모은 값은 날짜별로 5분마다 <API 서버>/launcher/usage 로 보내고, 못 보내면 %LOCALAPPDATA%\<앱>\usage-pending.json 에 두었다가 다시 보냄.
-// API 서버 주소: 설치된 i-luncher 의 launcher.env (API_SERVER), 없으면 앱 옆 update.json 의 Api 가 .../api/v3 일 때 그 앞부분.
+// API 서버 주소: 설치된 i-luncher 의 launcher.env (API_SERVER).
+// 마스터 계정(그 launcher.env 의 MASTER_USERS 에 이 PC 의 Windows 계정)만 모읍니다. 일반 사용자는 모으지도 보내지도 않습니다 (나중에 정함).
 // 사용자는 PC 이름·계정의 해시 앞 12자리로만 구분합니다 (이름은 보내지 않음). bin\Debug·bin\Release 에서 도는 개발 빌드는 보내지도,
 // usage-pending.json 에 남기지도 않습니다 (남기면 같은 PC 에 설치된 앱이 나중에 개발 중 기록까지 보냄).
 // 다른 DLL 을 쓰지 않습니다 (JSON 도 직접 읽고 씀): 실행 파일만 복사해 도는 서비스 사본에서도 동작.
+// 또 Start 는 AppMemory 도 켭니다 (누구에게나): 앱이 뒤에서 한가할 때 쓰지 않는 메모리를 Windows 에 돌려줌 (이 파일 맨 아래).
 #nullable enable
 using System;
 using System.Collections.Generic;
@@ -53,6 +55,7 @@ namespace ILuncher.AppKit
         private static Stopwatch? _clock;
         private static TimeSpan _lastTick, _lastSend;
         private static int _sending;
+        private static bool _excluded;  // 일반 사용자: Start 가 아무것도 하지 않았고 Count 도 버림
         private static UsageKind _kind;
         private static string _app = "", _pendingPath = "";
 
@@ -67,9 +70,13 @@ namespace ILuncher.AppKit
         /// <summary>앱 시작 때 한 번. app 을 비우면 update.json 의 InstallName, 없으면 실행 파일 이름</summary>
         public static void Start(UsageKind kind = UsageKind.Interactive, string? app = null)
         {
+            // 쓰지 않는 메모리 돌려주기는 누구에게나 (사용량 집계는 아래처럼 마스터만)
+            AppMemory.Start();
             lock (Gate)
             {
                 if (_timer != null) return;
+                // 일반 사용자는 모으지 않음 (마스터 계정만. 개발 빌드 · ServerOverride 는 예전처럼 모으되 개발 빌드는 보내지 않음)
+                if (string.IsNullOrWhiteSpace(ServerOverride) && !IsDevelopmentBuild() && !IsLauncherMaster()) { _excluded = true; return; }
                 _kind = kind;
                 _app = Clean(app) ?? Clean(ReadUpdateJson("InstallName")) ?? Clean(Assembly.GetEntryAssembly()?.GetName().Name) ?? "App";
                 _pendingPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), _app, "usage-pending.json");
@@ -86,7 +93,7 @@ namespace ILuncher.AppKit
         /// <summary>작업 한 건 (amount = 그 작업의 양: 바이트·파일 수 등, 없으면 0)</summary>
         public static void Count(string metric, double amount = 0)
         {
-            if (!MetricName.IsMatch(metric ?? "") || double.IsNaN(amount) || double.IsInfinity(amount)) return;
+            if (_excluded || !MetricName.IsMatch(metric ?? "") || double.IsNaN(amount) || double.IsInfinity(amount)) return;
             lock (Gate) AddLocked(metric!, 1, Math.Max(0, amount));
         }
 
@@ -308,12 +315,12 @@ namespace ILuncher.AppKit
 
         // ── 서버 주소 · 사용자 · 버전 ──────────────────────────────────────────────────────────
 
-        /// <summary>보낼 API 서버 (끝의 / 없음). 없으면 null (파일에만 모아 둠)</summary>
+        /// <summary>보낼 API 서버 (끝의 / 없음). 없으면 null (파일에만 모아 둠). 일반 사용자는 null</summary>
         public static string? Server()
         {
             if (!string.IsNullOrWhiteSpace(ServerOverride)) return ServerOverride!.Trim().TrimEnd('/');
-            if (IsDevelopmentBuild()) return null;
-            return LauncherServer() ?? UpdateServer();
+            if (IsDevelopmentBuild() || !IsLauncherMaster()) return null;
+            return LauncherServer();
         }
 
         /// <summary>bin\Debug · bin\Release 에서 도는 개발 빌드 (ServerOverride 를 정하면 아님): 보내지도 파일에 두지도 않음</summary>
@@ -327,6 +334,22 @@ namespace ILuncher.AppKit
 
         /// <summary>설치된 i-luncher 의 launcher.env 의 API_SERVER</summary>
         internal static string? LauncherServer()
+        {
+            string value = (LauncherEnv("API_SERVER") ?? "").Trim('"').TrimEnd('/');
+            return Uri.TryCreate(value, UriKind.Absolute, out var uri) && (uri.Scheme == "http" || uri.Scheme == "https") ? value : null;
+        }
+
+        /// <summary>이 PC 의 Windows 계정이 설치된 i-luncher 의 마스터(launcher.env 의 MASTER_USERS, 쉼표 · 세미콜론 · 빈칸)인지</summary>
+        internal static bool IsLauncherMaster()
+        {
+            string name = Environment.UserName;
+            name = name.Substring(name.LastIndexOf('\\') + 1);
+            return (LauncherEnv("MASTER_USERS") ?? "").Trim('"').Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries)
+                .Any(user => string.Equals(user.Trim(), name, StringComparison.OrdinalIgnoreCase));
+        }
+
+        /// <summary>설치된 i-luncher 의 launcher.env 의 값 하나 (없으면 null)</summary>
+        private static string? LauncherEnv(string name)
         {
             var folders = new List<string>();
             try
@@ -344,25 +367,13 @@ namespace ILuncher.AppKit
                     if (!File.Exists(path)) continue;
                     foreach (string line in File.ReadAllLines(path))
                     {
-                        string text = line.Trim().TrimStart('﻿');
-                        if (!text.StartsWith("API_SERVER=", StringComparison.Ordinal)) continue;
-                        string value = text.Substring("API_SERVER=".Length).Trim().Trim('"').TrimEnd('/');
-                        if (Uri.TryCreate(value, UriKind.Absolute, out var uri) && (uri.Scheme == "http" || uri.Scheme == "https")) return value;
+                        string text = line.Trim().TrimStart('\uFEFF');
+                        if (text.StartsWith(name + "=", StringComparison.Ordinal)) return text.Substring(name.Length + 1).Trim();
                     }
                 }
                 catch { }
             }
             return null;
-        }
-
-        /// <summary>update.json 의 Api 가 API 서버 중계(.../api/v3, github 주소 아님)일 때 그 서버</summary>
-        internal static string? UpdateServer()
-        {
-            string api = (ReadUpdateJson("Api") ?? "").TrimEnd('/');
-            if (!api.EndsWith("/api/v3", StringComparison.OrdinalIgnoreCase)) return null;
-            string server = api.Substring(0, api.Length - "/api/v3".Length);
-            if (!Uri.TryCreate(server, UriKind.Absolute, out var uri) || uri.Host.IndexOf("github", StringComparison.OrdinalIgnoreCase) >= 0) return null;
-            return server;
         }
 
         /// <summary>앱 옆 update.json 의 문자열 값 하나 (AppKit.targets 가 만드는 한 줄짜리 파일)</summary>
@@ -435,6 +446,7 @@ namespace ILuncher.AppKit
             {
                 _timer?.Dispose();
                 _timer = null;
+                _excluded = false;
                 _days = new Dictionary<string, Dictionary<string, double[]>>();
                 _app = app;
                 _kind = kind;
@@ -445,5 +457,92 @@ namespace ILuncher.AppKit
         }
 
         internal static string PendingPath { get { lock (Gate) return _pendingPath; } }
+    }
+
+    /// <summary>
+    /// 쓰지 않는 메모리 돌려주기 (AppUsage.Start 가 켬, 일반 · 마스터 모두).
+    /// 앱이 뒤에 있고(맨 앞 창이 다른 프로그램) 한가한 채로 15초가 지나면 한 번: 쓰지 않는 .NET 힙을 Windows 에 돌려주고(GC) 작업 집합을 비움.
+    /// 다시 앞으로 오거나 일을 하면 필요한 만큼만 다시 올라오고, 그 뒤 또 뒤에서 한가해지면 다시 한 번.
+    /// 뒤에서 조금씩 하는 일(새로고침 · 화면 갱신)로 작업 집합이 16MB 넘게 다시 늘어도 한 번 더.
+    /// 앞에 있거나 바쁠 때(5초에 CPU 0.15초 넘게: 복사 · 분석 · 받기 중)는 하지 않음
+    /// </summary>
+    public static class AppMemory
+    {
+        private static readonly TimeSpan Check = TimeSpan.FromSeconds(5);
+        private static readonly TimeSpan BusyCpu = TimeSpan.FromMilliseconds(150);
+        private const int QuietChecks = 3;
+        private const long RegrowBytes = 16L * 1024 * 1024;
+        private static readonly object Gate = new object();
+        private static System.Threading.Timer? _timer;
+        private static TimeSpan _lastCpu;
+        private static int _quiet;
+        private static bool _trimmed;
+        private static long _trimmedSize;
+
+        public static void Start()
+        {
+            lock (Gate)
+            {
+                if (_timer != null) return;
+                _lastCpu = CpuTime();
+                _timer = new System.Threading.Timer(_ => OnCheck(), null, Check, Check);
+            }
+        }
+
+        /// <summary>지금 한 번 정리 (보통은 Start 가 알아서)</summary>
+        public static void Trim()
+        {
+#if NET7_0_OR_GREATER
+            // Aggressive: 빈 힙 구역까지 Windows 에 돌려줌 (커밋도 줄어듦)
+            GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+#else
+            System.Runtime.GCSettings.LargeObjectHeapCompactionMode = System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
+            GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
+#endif
+            SetProcessWorkingSetSize(GetCurrentProcess(), (IntPtr)(-1), (IntPtr)(-1));
+        }
+
+        private static void OnCheck()
+        {
+            if (!Monitor.TryEnter(Gate)) return;  // 앞 정리가 아직이면 건너뜀
+            try
+            {
+                TimeSpan cpu = CpuTime();
+                bool busy = cpu - _lastCpu > BusyCpu;
+                _lastCpu = cpu;
+                if (busy || IsForeground()) { _quiet = 0; _trimmed = false; return; }
+                if (_trimmed && WorkingSet() - _trimmedSize < RegrowBytes || ++_quiet < QuietChecks) return;
+                Trim();
+                _lastCpu = CpuTime();  // 정리에 쓴 CPU 는 바쁨으로 세지 않음
+                _trimmed = true;
+                _trimmedSize = WorkingSet();
+                _quiet = 0;
+            }
+            catch (Exception)
+            {
+                // 정리는 덤: 실패해도 앱은 그대로 (타이머에서 예외가 나가면 앱이 끝나므로 삼킴)
+            }
+            finally { Monitor.Exit(Gate); }
+        }
+
+        private static TimeSpan CpuTime() { using var process = Process.GetCurrentProcess(); return process.TotalProcessorTime; }
+        private static long WorkingSet() { using var process = Process.GetCurrentProcess(); return process.WorkingSet64; }
+
+        private static readonly int ProcessId = GetProcessId();
+        private static int GetProcessId() { using var process = Process.GetCurrentProcess(); return process.Id; }
+
+        /// <summary>맨 앞 창이 이 앱 (잠금 화면 · 로그인 화면이면 아님)</summary>
+        private static bool IsForeground()
+        {
+            IntPtr window = GetForegroundWindow();
+            if (window == IntPtr.Zero) return false;
+            GetWindowThreadProcessId(window, out uint owner);
+            return owner == (uint)ProcessId;
+        }
+
+        [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+        [DllImport("kernel32.dll")] private static extern IntPtr GetCurrentProcess();
+        [DllImport("kernel32.dll", SetLastError = true)] private static extern bool SetProcessWorkingSetSize(IntPtr process, IntPtr minimum, IntPtr maximum);
     }
 }
