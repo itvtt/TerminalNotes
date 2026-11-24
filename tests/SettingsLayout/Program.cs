@@ -62,7 +62,6 @@ internal static class Program
                 scroll.ScrollToBottom();
                 await Flush();
                 // Problems are reported automatically: the manual 문제 보내기 row stays hidden.
-                Check(((FrameworkElement)settings.FindName("ProblemReportRow")).Visibility == Visibility.Collapsed, "settings hide the manual problem report button");
                 CheckVisibleInScroll((Button)settings.FindName("EditOpenCodeConfigButton"), scroll);
                 CheckFooter(settings, footer);
                 SaveImage(settings, Path.Combine(artifacts, "settings-minimum.png"));
@@ -305,7 +304,6 @@ namespace TerminalNotes
 {
     // Isolated seams deliberately prevent production settings, instructions, installers or app startup from running.
     internal static class MainWindow { public static string DefaultSettingsPath => "unused-settings.json"; }
-    internal sealed class DiagnosticLogAnalysisDialog : Window { public DiagnosticLogAnalysisDialog(string path) { } }
     public enum AutoInstallStatus { NotConnected, Completed, Failed }
     public sealed record AutoInstallResult(AutoInstallStatus Status, string Message);
     public sealed record AutoInstallDetectionResult(bool IsInstalled, string Message);

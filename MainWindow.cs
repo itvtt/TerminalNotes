@@ -15056,7 +15056,6 @@ public partial class MainWindow : Window
         AppVersionLabel.Text = "v" + ApplicationDiagnostics.DisplayVersion;
         InitializeAnnouncements();
         StartSystemMeter();
-        StartAutomaticProblemReports();
         InitializeAgentBoard();
         StartMySkills();
         ContentRendered += (_, _) => _ = CheckForUpdatesAtStartupAsync();

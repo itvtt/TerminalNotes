@@ -1615,150 +1615,7 @@ using global::Microsoft.Win32;
 using global::TerminalNotes.Services;
 
 
-public partial class DiagnosticLogAnalysisDialog : Window
-{
-    private readonly string _settingsPath;
-    private CancellationTokenSource? _loadCancellation;
-    private string? _safeSummary;
-    private bool _closed;
-
-    public DiagnosticLogAnalysisDialog(string settingsPath)
-    {
-        InitializeComponent();
-        _settingsPath = settingsPath;
-        Loaded += async (_, _) => await LoadAsync();
-        Closed += (_, _) => { _closed = true; _loadCancellation?.Cancel(); };
-    }
-
-    // The analysis only feeds the report; nothing about it is shown or configured here.
-    private async Task LoadAsync()
-    {
-        var cancellation = new CancellationTokenSource();
-        _loadCancellation = cancellation;
-        try
-        {
-            var analysis = await DiagnosticLogAnalyzer.AnalyzeDefaultAsync(_settingsPath, cancellation.Token);
-            if (!_closed) _safeSummary = analysis.Summary;
-        }
-        catch (OperationCanceledException) { }
-        catch (Exception exception) { ApplicationDiagnostics.RecordException("report_analysis_failed", exception); }
-        finally
-        {
-            if (!_closed)
-            {
-                SendButton.IsEnabled = true;
-                LoadStatus.Text = "보낼 준비가 됐습니다.";
-            }
-            _loadCancellation = null;
-            cancellation.Dispose();
-        }
-    }
-
-    // Sends the report and a log ZIP to the relay; on failure the ZIP fallback appears.
-    private async void Send_Click(object sender, RoutedEventArgs e)
-    {
-        SendButton.IsEnabled = false;
-        LoadStatus.Text = "보내는 중…";
-        string zipPath = global::System.IO.Path.Combine(global::System.IO.Path.GetTempPath(), "TerminalNotes-report-" + Guid.NewGuid().ToString("N") + ".zip");
-        try
-        {
-            string report = BuildReport();
-            await WriteReportArchiveAsync(zipPath, report);
-            string id = await ReportRelayClient.SendAsync(report, zipPath);
-            if (_closed) return;
-            LoadStatus.Text = "보냈습니다. 접수 번호 " + id;
-            SendButton.Content = "보냄";
-            ExportLogsButton.Visibility = Visibility.Collapsed;
-        }
-        catch (Exception exception)
-        {
-            ApplicationDiagnostics.RecordException("report_send_failed", exception);
-            if (_closed) return;
-            LoadStatus.Text = "보내지 못했습니다 · " + ReportRelayClient.Describe(exception) + " ‘ZIP으로 저장…’으로 파일을 만들어 직접 보내 주세요.";
-            ExportLogsButton.Visibility = Visibility.Visible;
-            SendButton.IsEnabled = true;
-        }
-        finally
-        {
-            try { global::System.IO.File.Delete(zipPath); } catch (Exception) { }
-        }
-    }
-
-    private static async Task WriteReportArchiveAsync(string path, string report)
-    {
-        await ApplicationDiagnostics.ExportArchiveAsync(path);
-        await Task.Run(() =>
-        {
-            using var archive = global::System.IO.Compression.ZipFile.Open(path, global::System.IO.Compression.ZipArchiveMode.Update);
-            archive.GetEntry("report.txt")?.Delete();
-            using var writer = new global::System.IO.StreamWriter(archive.CreateEntry("report.txt").Open(), new global::System.Text.UTF8Encoding(true));
-            writer.Write(report);
-        });
-    }
-
-    // One self-contained text a user can paste or attach: environment, their own words, then the analysis.
-    internal string BuildReport()
-    {
-        var report = new global::System.Text.StringBuilder();
-        report.AppendLine("[Terminal Notes 문제 보고서]");
-        report.AppendLine("앱 버전: v" + ApplicationDiagnostics.DisplayVersion);
-        report.AppendLine("Windows: " + global::System.Runtime.InteropServices.RuntimeInformation.OSDescription.Trim() +
-            " (" + global::System.Runtime.InteropServices.RuntimeInformation.OSArchitecture + ")");
-        report.AppendLine("작업 모드: " + ReadWorkModeLabel());
-        DateTimeOffset now = DateTimeOffset.Now;
-        report.AppendLine($"작성 시각: {now:yyyy-MM-dd HH:mm} (UTC{now:zzz})");
-        report.AppendLine();
-        report.AppendLine("[어떤 문제가 있었나요]");
-        string description = ProblemDescription.Text.Trim();
-        report.AppendLine(description.Length > 0 ? description : "(작성하지 않음)");
-        report.AppendLine();
-        report.AppendLine("[자동 로그 분석]");
-        report.AppendLine(_safeSummary ?? "(분석 결과 없음)");
-        return report.ToString();
-    }
-
-    private string ReadWorkModeLabel()
-    {
-        try
-        {
-            if (!global::System.IO.File.Exists(_settingsPath)) return "확인 불가";
-            using var document = global::System.Text.Json.JsonDocument.Parse(global::System.IO.File.ReadAllText(_settingsPath));
-            return document.RootElement.TryGetProperty("WorkMode", out var mode) ? mode.GetString() switch
-            {
-                "Basic" => "일반", "Plan" => "플랜", "Advanced" => "고급", _ => "확인 불가"
-            } : "확인 불가";
-        }
-        catch (Exception) { return "확인 불가"; }
-    }
-    private async void ExportLogs_Click(object sender, RoutedEventArgs e)
-    {
-        var picker = new SaveFileDialog
-        {
-            Title = "보고서 ZIP 저장", Filter = "ZIP 파일 (*.zip)|*.zip", DefaultExt = ".zip",
-            FileName = "TerminalNotes-report-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".zip"
-        };
-        if (picker.ShowDialog(this) != true) return;
-        ExportLogsButton.IsEnabled = false;
-        LoadStatus.Text = "ZIP 저장 중…";
-        try
-        {
-            await WriteReportArchiveAsync(picker.FileName, BuildReport());
-            if (!_closed) LoadStatus.Text = "ZIP을 저장했습니다. 이 파일을 보내 주세요.";
-        }
-        catch (Exception exception)
-        {
-            ApplicationDiagnostics.RecordException("log_export_failed", exception);
-            if (!_closed) LoadStatus.Text = "ZIP을 저장하지 못했습니다. 저장 위치와 디스크 여유를 확인하세요.";
-        }
-        finally
-        {
-            if (!_closed) ExportLogsButton.IsEnabled = true;
-        }
-    }
-    private void Close_Click(object sender, RoutedEventArgs e) => Close();
-}
-
-/// <summary>Posts problem reports to the developer's relay (relay\relay.py).</summary>
+/// <summary>The API server (i-api) address and key from report-relay.json: skills and announcements use it. Problem reports are gone (2026-11-25).</summary>
 internal static class ReportRelayClient
 {
     // The relay is a PC on the local network: reached directly, never through the system proxy (which may not reach it).
@@ -1776,37 +1633,6 @@ internal static class ReportRelayClient
         string? Read(string name) => document.RootElement.TryGetProperty(name, out var value) ? value.GetString() : null;
         return (Read("Url"), Read("Key"));
     }
-
-    public static async Task<string> SendAsync(string report, string zipPath)
-    {
-        var (url, key) = Endpoint();
-        if (string.IsNullOrWhiteSpace(url)) throw new InvalidOperationException("보낼 주소가 설정되지 않았습니다.");
-        using var content = new global::System.Net.Http.MultipartFormDataContent();
-        content.Add(new global::System.Net.Http.StringContent(report, global::System.Text.Encoding.UTF8), "report");
-        await using var zip = global::System.IO.File.OpenRead(zipPath);
-        var file = new global::System.Net.Http.StreamContent(zip);
-        file.Headers.ContentType = new global::System.Net.Http.Headers.MediaTypeHeaderValue("application/zip");
-        content.Add(file, "logs", "logs.zip");
-        using var request = new global::System.Net.Http.HttpRequestMessage(global::System.Net.Http.HttpMethod.Post, url.TrimEnd('/') + "/api/reports") { Content = content };
-        request.Headers.Add("X-TerminalNotes-Key", key ?? "");
-        // The relay's status page lists each PC with its app version.
-        if (typeof(ReportRelayClient).Assembly.GetName().Version is { } version)
-            request.Headers.TryAddWithoutValidation("User-Agent", $"TerminalNotes/{version.Major}.{version.Minor}.{Math.Max(version.Build, 0)}");
-        using var response = await Http.SendAsync(request);
-        if (!response.IsSuccessStatusCode) throw new global::System.Net.Http.HttpRequestException("응답 " + (int)response.StatusCode, null, response.StatusCode);
-        using var body = global::System.Text.Json.JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-        return body.RootElement.TryGetProperty("id", out var id) ? id.GetString() ?? "" : "";
-    }
-
-    public static string Describe(Exception exception) => exception switch
-    {
-        global::System.Net.Http.HttpRequestException { StatusCode: global::System.Net.HttpStatusCode.TooManyRequests } => "너무 자주 보냈습니다. 잠시 후 다시 시도하세요.",
-        global::System.Net.Http.HttpRequestException { StatusCode: global::System.Net.HttpStatusCode.Unauthorized } => "보내는 키가 맞지 않습니다.",
-        global::System.Net.Http.HttpRequestException { StatusCode: not null } http => "서버 응답 오류(" + (int)http.StatusCode! + ").",
-        global::System.Net.Http.HttpRequestException or TaskCanceledException => "받는 서버에 연결하지 못했습니다.",
-        InvalidOperationException => exception.Message,
-        _ => "보고서를 만들거나 보내는 중 문제가 생겼습니다."
-    };
 }
 }
 #endregion
@@ -3903,12 +3729,6 @@ public partial class TerminalProfilesDialog : Window
             _autoInstallBusy = false;
             if (IsLoaded) OpenAutoInstallButton.IsEnabled = true;
         }
-    }
-
-    private void AnalyzeLogsButton_Click(object sender, RoutedEventArgs e)
-    {
-        var dialog = new DiagnosticLogAnalysisDialog(_diagnosticSettingsPath) { Owner = this };
-        dialog.ShowDialog();
     }
 
     private void EditOpenCodeInstructionsButton_Click(object sender, RoutedEventArgs e)
