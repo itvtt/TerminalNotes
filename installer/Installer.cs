@@ -213,6 +213,7 @@ internal static class Installer
             if (key?.GetValue("InstallLocation") is string location &&
                 string.Equals(Path.GetFullPath(location).TrimEnd('\\'), target.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase))
                 Registry.CurrentUser.DeleteSubKeyTree(UninstallKey, throwOnMissingSubKey: false);
+        if (ShortcutDirectory is null) RemoveTrayIconSettings(target);
         progress("파일 삭제 중…");
         string self = Path.GetFullPath(SelfPath);
         foreach (string file in Directory.EnumerateFiles(target, "*", SearchOption.AllDirectories))
@@ -225,6 +226,30 @@ internal static class Installer
                 { CreateNoWindow = true, UseShellExecute = false, WorkingDirectory = Path.GetTempPath() });
         else if (!Directory.EnumerateFileSystemEntries(target).Any()) Directory.Delete(target);
         progress("제거 완료");
+    }
+
+    /// <summary>
+    /// Removes this install folder's entries from the tray icon settings (Settings → Taskbar → Other system tray icons) and their
+    /// notification entries, so a removed app's old icon picture does not stay in that list. Other programs' entries stay.
+    /// </summary>
+    private static void RemoveTrayIconSettings(string target)
+    {
+        string root = target.TrimEnd('\\') + "\\";
+        try
+        {
+            using var settings = Registry.CurrentUser.OpenSubKey(@"Control Panel\NotifyIconSettings", writable: true);
+            if (settings is null) return;
+            foreach (string id in settings.GetSubKeyNames())
+            {
+                string? path;
+                using (var entry = settings.OpenSubKey(id)) path = entry?.GetValue("ExecutablePath") as string;
+                if (path is null || !path.Trim().StartsWith(root, StringComparison.OrdinalIgnoreCase)) continue;
+                settings.DeleteSubKeyTree(id, throwOnMissingSubKey: false);
+                Registry.CurrentUser.DeleteSubKeyTree(@"Software\Microsoft\Windows\CurrentVersion\Notifications\Settings\NotifyIconGeneratedAumid_" + id, throwOnMissingSubKey: false);
+                Registry.CurrentUser.DeleteSubKeyTree(@"Software\Classes\AppUserModelId\NotifyIconGeneratedAumid_" + id, throwOnMissingSubKey: false);
+            }
+        }
+        catch (Exception error) when (error is System.Security.SecurityException or UnauthorizedAccessException or IOException or ArgumentException) { }
     }
 
     /// <summary>Install location recorded in Windows "Apps", if Terminal Notes was installed for this user.</summary>
