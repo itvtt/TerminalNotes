@@ -15,6 +15,7 @@ internal static class Program
             VerifyContinueIsReservedAndAcknowledgedOnce();
             VerifyBusyStallThresholdsAndAbortFlow();
             VerifyRetryToolAndSafetyGates();
+            VerifyServerNamedWaitHoldsOnlyThisSession();
             VerifySafetyGatesRestartTimersWithoutResettingBackoff();
             VerifyPollingGapsAndUnknownTodoStalls();
             VerifyAmbiguousActionNeverDuplicates();
@@ -219,6 +220,51 @@ internal static class Program
             "abort must be followed by a fresh idle settle period");
         Expect(policy.Evaluate(freshIdle, Start.AddMinutes(AbortMinutes + 2).AddSeconds(20)).Action,
             RecoveryAction.Continue, "fresh native idle after abort permits a continuation");
+    }
+
+    private static void VerifyServerNamedWaitHoldsOnlyThisSession()
+    {
+        // OpenCode would retry in 30 seconds, but the server asked for 120: the retry is stopped at once.
+        var policy = new OpenCodeRecoveryPolicy();
+        var retry = Observation() with { Status = OpenCodeRecoveryExecutionState.Retry, NativeRetryAt = Start.AddSeconds(30), HasCurrentUnfinishedRequest = true };
+        Expect(policy.Evaluate(retry, Start).Action, RecoveryAction.None, "a native retry without a server wait is never interrupted");
+        var limited = retry with { NativeStatusVersion = 2, ServerWaitUntil = Start.AddSeconds(125) };
+        // As with every cleared safety gate, the first look after it only settles; the stop comes on the next poll.
+        Expect(policy.Evaluate(limited, Start.AddSeconds(1)).Action, RecoveryAction.None, "a cleared retry gate acted without a fresh look");
+        limited = limited with { NativeStatusVersion = 3 };
+        var stop = policy.Evaluate(limited, Start.AddSeconds(1));
+        Expect(stop.Action, RecoveryAction.Abort, "a native retry before the server's wait is stopped");
+        Require(stop.Reason == OpenCodeRecoveryPolicy.ServerWaitAbortReason, "the stop did not say it waits for the server");
+        Require(policy.TryRecordActionAttempted(stop, Start.AddSeconds(1)), "the stop was not reserved");
+        policy.RecordActionResult(stop.DecisionId, RecoveryActionResult.Accepted, Start.AddSeconds(2));
+
+        // Idle after the stop: nothing is sent before the server's time, then the work continues.
+        var idle = limited with { Status = OpenCodeRecoveryExecutionState.Idle, NativeStatusVersion = 4, NativeRetryAt = null };
+        for (int second = 3; second < 125; second += 10)
+        {
+            var wait = policy.Evaluate(idle with { NativeStatusVersion = 3 + second }, Start.AddSeconds(second));
+            Expect(wait.Action, RecoveryAction.None, "this session sent a request before the server's wait");
+            Require(wait.Phase == RecoveryPhase.RetryDelay && wait.RetryAfterUtc == Start.AddSeconds(125), "the hold did not show its end time");
+        }
+        RecoveryDecision resumed = RecoveryDecision.None("not yet");
+        for (int second = 125; second <= 170 && resumed.Action != RecoveryAction.Continue; second += 5)
+            resumed = policy.Evaluate(idle with { NativeStatusVersion = 200 + second }, Start.AddSeconds(second));
+        Expect(resumed.Action, RecoveryAction.Continue, "work did not continue after the server's wait");
+
+        // A native retry that already waits as long as the server asked is left alone.
+        var patient = new OpenCodeRecoveryPolicy();
+        var longRetry = Observation() with { Status = OpenCodeRecoveryExecutionState.Retry, NativeRetryAt = Start.AddSeconds(130), ServerWaitUntil = Start.AddSeconds(125) };
+        Expect(patient.Evaluate(longRetry, Start).Action, RecoveryAction.None, "a native retry that already waits long enough was stopped");
+        // A running tool is never interrupted, and no stop happens without unfinished work to continue.
+        var tool = new OpenCodeRecoveryPolicy();
+        for (int poll = 0; poll < 3; poll++)
+            Expect(tool.Evaluate(limited with { RunningToolCount = 1, NativeStatusVersion = 10 + poll }, Start.AddSeconds(poll)).Action,
+                RecoveryAction.None, "a server wait interrupted a running tool");
+        var nothingLeft = new OpenCodeRecoveryPolicy();
+        for (int poll = 0; poll < 3; poll++)
+            Expect(nothingLeft.Evaluate(limited with { HasKnownTodoList = false, UnfinishedTodoCount = 0, HasCurrentUnfinishedRequest = false,
+                NativeStatusVersion = 10 + poll }, Start.AddSeconds(poll)).Action, RecoveryAction.None,
+                "a retry was stopped with no work to continue afterwards");
     }
 
     private static void VerifyRetryToolAndSafetyGates()

@@ -20,6 +20,7 @@ internal static class Program
             Environment.SetEnvironmentVariable("OPENCODE_SERVER_PASSWORD", "test-only-password");
             Environment.SetEnvironmentVariable("OPENCODE_SERVER_USERNAME", "recovery-test");
             VerifyMessageIdsMatchOpenCodeAscendingShape();
+            VerifyServerNamedWaits();
             await VerifyTaskCompletionEvidenceAsync();
             await VerifyIntermediateToolErrorsDoNotPoisonTerminalEvidenceAsync();
             await VerifyActivityFingerprintCurrentTurnAsync();
@@ -147,9 +148,18 @@ internal static class Program
         Require(await Retries("ProviderError", null, null, "upstream model overloaded"), "An overloaded upstream model was not retried.");
         Require(!await Retries("UnknownError", null, null, "Invalid API key"), "An API key error was retried automatically.");
         Require(!await Retries("UnknownError", null, null, "maximum context length exceeded, please try again"), "A context-length error was retried automatically.");
+        Require(OpenCodeFailureClassifier.CanCompact((await client.ReadAsync(RootSessionId)).Evidence!),
+            "A context-length error reported only in words was not routed to compaction.");
         Require(!await Retries("UnknownError", null, null, null), "An unexplained error was retried automatically.");
         Require(!await Retries("ProviderConfigError", null, null, "timeout"), "A configuration error was retried because of its message.");
         Require(!await Retries("UnknownError", 401, null, "server busy"), "A 401 was retried because of its message.");
+        // A failed request may be started over by Loop; a person's stop or refusal never is.
+        Require(!OpenCodeFailureClassifier.WasStoppedByPerson((await client.ReadAsync(RootSessionId)).Evidence!), "A 401 was taken for a person's stop.");
+        foreach (string stop in new[] { "MessageAbortedError", "PermissionDeniedError", "QuestionRejectedError" })
+        {
+            failureType = stop; statusCode = null; errorMessage = null;
+            Require(OpenCodeFailureClassifier.WasStoppedByPerson((await client.ReadAsync(RootSessionId)).Evidence!), stop + " was not taken for a person's stop.");
+        }
         failureType = "tool_error"; statusCode = null; retryable = true; errorMessage = null;
     }
 
@@ -1092,6 +1102,53 @@ internal static class Program
     {
         Content = new StringContent(json, Encoding.UTF8, "application/json")
     };
+
+    private static void VerifyServerNamedWaits()
+    {
+        static TimeSpan? Wait(string? text) => OpenCodeFailureClassifier.ServerRequestedWait(text);
+        Require(Wait("요청이 많습니다. 60-120초 후 다시 시도하세요.") == TimeSpan.FromSeconds(120), "A Korean range did not use its upper end.");
+        Require(Wait("Too many requests, retry after 60~120 seconds") == TimeSpan.FromSeconds(120), "An English range did not use its upper end.");
+        Require(Wait("요청 제한: 60초~120초 대기") == TimeSpan.FromSeconds(120), "A range with a unit on both ends was misread.");
+        Require(Wait("Rate limit exceeded. Try again in 2 minutes.") == TimeSpan.FromMinutes(2), "Minutes were misread.");
+        Require(Wait("rate_limit: please wait 1.5분") == TimeSpan.FromSeconds(90), "A decimal minute was misread.");
+        Require(Wait("429 Too Many Requests: retry in 500ms") == TimeSpan.FromMilliseconds(500), "Milliseconds were misread.");
+        Require(Wait("Rate limited. Retry after 86400 seconds") == OpenCodeFailureClassifier.LongestNamedWait, "A named wait was not capped.");
+        Require(Wait("Too many requests") is null && OpenCodeFailureClassifier.LooksLikeRateLimit("Too many requests"),
+            "A rate limit without a time named one, or was not recognised.");
+        Require(Wait("Request timed out after 600 seconds") is null, "A timeout without a rate-limit word was taken as a server wait.");
+        Require(Wait("insufficient_quota: rate limit, retry after 60 seconds") is null, "A billing problem was taken as a wait.");
+        Require(Wait("provider status update 3") is null && Wait(null) is null && Wait("") is null, "Plain status text named a wait.");
+        Require(Wait("Run it only as a bounded 60–120 second smoke check.") is null, "A prompt without a rate-limit word named a wait.");
+
+        // Only the time next to retry wording is the wait; quota windows are not (they held a terminal an hour each time).
+        Require(Wait("Rate limit: 100 requests per 1 hour") is null, "A quota window was read as a wait.");
+        Require(Wait("시간당 100회 요청 제한(1시간 기준)을 초과했습니다. 30분 후 다시 시도하세요.") == TimeSpan.FromMinutes(30),
+            "A Korean quota window was read instead of the retry time.");
+        Require(Wait("Rate limit of 60 requests per 1 minute exceeded, retry in 20 seconds") == TimeSpan.FromSeconds(20),
+            "An English quota window was read instead of the retry time.");
+        Require(Wait("요청 제한: 일일 한도 초과 (24시간마다 초기화)") is null, "A daily reset window was read as a wait.");
+        Require(Wait("요청이 많아 잠시 후 다시 시도해 주세요 (예상 대기 시간: 90초)") == TimeSpan.FromSeconds(90), "A named waiting time was missed.");
+        Require(Wait("rate limited, 60초 뒤에 다시 요청하세요") == TimeSpan.FromSeconds(60), "'뒤' was not read as a wait.");
+
+        // The hold is the named time and a margin, the same day and night and on every repeat.
+        TimeSpan named = TimeSpan.FromSeconds(120), margin = TimeSpan.FromSeconds(5);
+        Require(OpenCodeFailureClassifier.ServerWaitHold(named) == named + margin &&
+            OpenCodeFailureClassifier.ServerWaitHold(TimeSpan.FromMinutes(30)) == TimeSpan.FromMinutes(30) + margin,
+            "A hold was not the server's named time.");
+
+        // An overflowing context reported only in words is compacted like a structured overflow.
+        static bool Overflow(string? text) => OpenCodeFailureClassifier.LooksLikeContextOverflow(text);
+        Require(Overflow("This model's maximum context length is 32768 tokens. However, you requested 40000 tokens.") &&
+            Overflow("the request exceeds the available context size, try increasing it") &&
+            Overflow("input length exceeds the context length") &&
+            Overflow("prompt is too long: 210000 tokens > 200000 maximum") &&
+            Overflow("Error code: context_length_exceeded") &&
+            Overflow("입력이 모델의 컨텍스트 길이를 초과했습니다") && Overflow("컨텍스트 한도 초과"),
+            "A context overflow in words was not recognised.");
+        Require(!Overflow("Too many requests") && !Overflow("invalid request: model not found") && !Overflow("Unauthorized: bad api key") &&
+            !Overflow("Rate limit reached for tokens per min") && !Overflow(null) && !Overflow(""),
+            "Another error was taken for a context overflow.");
+    }
 
     private static void Require(bool condition, string message)
     {

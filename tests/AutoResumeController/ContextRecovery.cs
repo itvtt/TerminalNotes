@@ -40,14 +40,15 @@ internal static partial class Program
 
         public object Assistant(string id, string parent, string? error = null, bool summary = false,
             string finish = "stop", string? text = "A complete useful native summary.", RecoveryModelSelection? model = null,
-            Dictionary<string, string>? headers = null, int? status = null, string? responseBody = null) => new
+            Dictionary<string, string>? headers = null, int? status = null, string? responseBody = null,
+            string message = "structured test error") => new
         {
             info = new { id, role = "assistant", sessionID = Fixture.Session, parentID = parent, summary,
                 providerID = (model ?? (summary ? ContextSummary : ContextWork)).ProviderId,
                 modelID = (model ?? (summary ? ContextSummary : ContextWork)).ModelId,
                 finish = error is null ? finish : "error", time = new { created = Fixture.Clock.GetUtcNow().ToUnixTimeMilliseconds() + ++_ordinal,
                     completed = Fixture.Clock.GetUtcNow().ToUnixTimeMilliseconds() + _ordinal },
-                error = error is null ? null : new { name = error, data = new { message = "structured test error", statusCode = status,
+                error = error is null ? null : new { name = error, data = new { message, statusCode = status,
                     isRetryable = false, responseHeaders = headers, responseBody } } },
             parts = text is null ? Array.Empty<object>() : new object[] { new { type = "text", text } }
         };
@@ -79,6 +80,7 @@ internal static partial class Program
     private static async Task ContextRecoveryScenariosAsync()
     {
         await ContextOverflowCompactsAndResumesOriginalAsync();
+        await ContextOverflowInWordsCompactsAsync();
         await NativeCompactionChainsAreReconciledWithoutDispatchAsync();
         await FailedCompactionRetriesWithNoCapAsync();
         await UncertainCompactionNeverDuplicatesAsync();
@@ -118,6 +120,24 @@ internal static partial class Program
             "Compaction continuation lost the original user instruction.");
         for (int i = 0; i < 4; i++) await scenario.AdvanceAsync(TimeSpan.FromMinutes(10));
         Require(f.Api.CompactionPosts == 1 && f.Api.ContinuePosts.Count == 1, "Accepted compaction/continuation was duplicated after long polling gaps.");
+    }
+
+    // A server that says the context overflowed only in words (400, no structured code) is compacted and the work
+    // continues; before, Loop took it for a problem only a person can fix and stopped for good.
+    private static async Task ContextOverflowInWordsCompactsAsync()
+    {
+        using var scenario = new ContextScenario("overflow-words");
+        var f = scenario.Fixture;
+        scenario.Rows[1] = scenario.Assistant("overflow-words", f.UserMessage, error: "APIError", status: 400,
+            message: "This model's maximum context length is 32768 tokens. However, you requested 40000 tokens.");
+        f.Api.OnCompaction = () => scenario.AddSummary();
+        await scenario.BindAsync();
+        Require(!f.Controller.WaitsForPersonAfterError, "A context overflow reported in words waited for a person.");
+        await scenario.AdvanceAsync(TimeSpan.FromSeconds(59));
+        await scenario.AdvanceAsync(TimeSpan.FromSeconds(1));
+        Require(f.Api.CompactionPosts == 1, "A context overflow reported in words was not compacted.");
+        for (int i = 0; i < 6; i++) await scenario.AdvanceAsync(TimeSpan.FromSeconds(10));
+        Require(f.Api.ContinuePosts.Count == 1, "Work did not continue after compacting an overflow reported in words.");
     }
 
     private static async Task NativeCompactionChainsAreReconciledWithoutDispatchAsync()
@@ -192,7 +212,7 @@ internal static partial class Program
 
     private static async Task ContextRecoveryHonorsGuardsAsync()
     {
-        foreach (string blocker in new[] { "permission", "question", "tool", "plan", "takeover", "auth", "ordinary400" })
+        foreach (string blocker in new[] { "permission", "question", "tool", "plan", "takeover", "auth", "ordinary400", "aborted" })
         {
             using var scenario = new ContextScenario("guard-" + blocker);
             var f = scenario.Fixture;
@@ -204,6 +224,14 @@ internal static partial class Program
             if (blocker is "auth" or "ordinary400")
             {
                 scenario.Rows[1] = scenario.Assistant("new-error", f.UserMessage, error: "APIError", status: blocker == "auth" ? 401 : 400);
+            }
+            if (blocker == "aborted") scenario.Rows[1] = scenario.Assistant("new-error", f.UserMessage, error: "MessageAbortedError");
+            if (blocker is "auth" or "aborted")
+            {
+                await scenario.AdvanceAsync(TimeSpan.FromSeconds(5));
+                // A failed request is Loop's to start over in a new session; a person's own stop is never redone.
+                Require(f.Controller.WaitsForPersonAfterError && f.Controller.FailedNeedingPerson == (blocker == "auth"),
+                    "A failed request and a person's stop were not told apart (" + blocker + ").");
             }
             if (blocker == "tool")
             {

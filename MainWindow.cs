@@ -3248,8 +3248,10 @@ public partial class MainWindow
 
     private Button CreateCmdTerminalButton(TabItem tab)
     {
-        var button = new Button { Content = "CMD", Width = 42, Height = 26, FontSize = 13,
-            Padding = new Thickness(0), Margin = new Thickness(4, 0, 0, 0) };
+        // Header actions are quiet like the toolbar above (no box): text only, a soft fill on hover.
+        var button = new Button { Content = "CMD", Height = 24, FontSize = 12,
+            Padding = new Thickness(8, 0, 8, 0), Margin = new Thickness(2, 0, 0, 0) };
+        button.SetResourceReference(StyleProperty, "QuietIconButton");
         AutomationProperties.SetName(button, "CMD에서 이어가기");
         ToolTipService.SetShowOnDisabled(button, true);
         button.Click += async (_, _) =>
@@ -3271,7 +3273,7 @@ public partial class MainWindow
             bool handedOff = pane.WasContinuedExternally;
             string project = CanonicalProjectPath(pane.WorkingDirectory);
             button.Content = handedOff ? "가져오기" : "CMD";
-            button.Width = handedOff ? 64 : 42;
+            button.SetResourceReference(ForegroundProperty, handedOff ? "Accent" : "TextSecondary");
             AutomationProperties.SetName(button, handedOff ? "앱 터미널로 가져오기" : "CMD에서 이어가기");
             button.IsEnabled = handedOff ? CanReturnTerminalFromCmd(project) : CanContinueTerminalInCmd(pane);
             button.ToolTip = handedOff ? ReturnFromCmdToolTip : CmdContinuationToolTip(pane);
@@ -7511,7 +7513,7 @@ public partial class MainWindow
         position.Visibility = Visibility.Collapsed;
         titleSurface.Children.Add(position);
         Grid.SetColumn(title, 1); titleSurface.Children.Add(title);
-        var heading = new ContentControl { Content = titleSurface, Margin = new Thickness(6, 0, 6, 0), MinHeight = 27,
+        var heading = new ContentControl { Content = titleSurface, Margin = new Thickness(10, 0, 6, 0), MinHeight = 32,
             Background = System.Windows.Media.Brushes.Transparent, HorizontalContentAlignment = HorizontalAlignment.Stretch, Cursor = System.Windows.Input.Cursors.SizeAll,
             Focusable = true, ToolTip = $"{ProjectDisplayName(project)} · 더블클릭 또는 F2를 눌러 작업 이름 편집\n{project}" };
         System.Windows.Automation.AutomationProperties.SetName(heading, $"{ProjectDisplayName(project)} 작업 이름. 더블클릭 또는 F2로 편집");
@@ -7534,12 +7536,14 @@ public partial class MainWindow
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         header.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         header.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        var close = new Button { Content = "×", Tag = tab, Width = 28, Height = 26, Padding = new Thickness(0), ToolTip = "이 터미널 종료 · 실행 중인 셸과 프로그램 종료" };
+        var close = new Button { Content = "×", Tag = tab, Width = 24, Height = 24, FontSize = 16, Padding = new Thickness(0, 0, 0, 2),
+            Margin = new Thickness(2, 0, 0, 0), ToolTip = "이 터미널 종료 · 실행 중인 셸과 프로그램 종료" };
+        close.SetResourceReference(StyleProperty, "QuietIconButton");
         System.Windows.Automation.AutomationProperties.SetName(close, "이 터미널 종료");
         close.Click += TerminalClose_Click;
         var cmd = CreateCmdTerminalButton(tab);
         var actions = new WrapPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right,
-            VerticalAlignment = VerticalAlignment.Center };
+            VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 4, 0) };
         actions.Children.Add(cmd);
         actions.Children.Add(CreateProjectRetryButton(project));
         actions.Children.Add(close);
@@ -7577,6 +7581,12 @@ public partial class MainWindow
         header.Visibility = Visibility.Visible;
         var body = new Grid(); body.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); body.RowDefinitions.Add(new RowDefinition());
         body.Children.Add(header); Grid.SetRow(host, 1); body.Children.Add(host);
+        // The title row is an opaque bar with a hairline under it, so the slot's outlines never show through it.
+        var headerBar = new Border { BorderThickness = new Thickness(0, 0, 0, 1), CornerRadius = new CornerRadius(6, 6, 0, 0), IsHitTestVisible = false };
+        headerBar.SetResourceReference(Border.BackgroundProperty, "Surface");
+        headerBar.SetResourceReference(Border.BorderBrushProperty, "Line");
+        Panel.SetZIndex(headerBar, -1);
+        body.Children.Add(headerBar);
         var frame = new Border { Child = body, Tag = tab, Margin = new Thickness(0), BorderThickness = new Thickness(0) };
         Grid.SetColumnSpan(frame, 3);
         view.Children.Add(frame);
@@ -10690,6 +10700,10 @@ public partial class MainWindow
                 foreach (UIElement child in slotContent.Children)
                     if (!ReferenceEquals(child, label)) child.Visibility = project is null && capacity <= 4 ? Visibility.Visible : Visibility.Collapsed;
             var slotButton = (Button)surface.Child;
+            // The dashed drop zone belongs to empty slots only; under a live terminal it would show through its edges.
+            if (slotButton.Content is Grid slotFace)
+                foreach (var outline in slotFace.Children.OfType<System.Windows.Shapes.Rectangle>())
+                    outline.Visibility = project is null ? Visibility.Visible : Visibility.Hidden;
             slotButton.ToolTip = project is null
                 ? "빈 칸을 클릭해 태스크를 선택하세요. 태스크를 끌어 놓아도 됩니다."
                 : $"{ProjectDisplayName(project)} · 이 칸에 배치됨";

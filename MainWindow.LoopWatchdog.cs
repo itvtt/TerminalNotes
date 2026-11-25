@@ -30,12 +30,17 @@ public partial class MainWindow
     // A question nobody answers this long during a Loop gets its recommended answer, or "decide yourself".
     internal static readonly TimeSpan LoopQuestionGrace = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan[] LoopRerunBackoff = [TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(3), TimeSpan.FromMinutes(10)];
+    // A request that failed in a way a plain retry cannot mend (a broken or overflowing conversation, a rejected request,
+    // credentials) is started over in a new session; a person who is there gets a few minutes to act first, and starts
+    // that fail again come further apart (a new session each time is not cheap).
+    internal static readonly TimeSpan LoopFailedGrace = TimeSpan.FromMinutes(3);
+    private static readonly TimeSpan[] LoopFailedBackoff = [TimeSpan.FromMinutes(3), TimeSpan.FromMinutes(10), TimeSpan.FromMinutes(30)];
     private readonly Dictionary<string, LoopWatch> _loopWatches = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _loopResumes = new(StringComparer.OrdinalIgnoreCase);
     private DispatcherTimer? _loopWatchdogTimer;
     private string[] _loopResumeSaved = [];
 
-    private enum LoopStall { Closed, Idle, ActiveIdle, BusyPaused, BusyUnowned, BusyOwned, Unknown }
+    private enum LoopStall { Closed, Idle, ActiveIdle, BusyPaused, BusyUnowned, BusyOwned, Unknown, Failed }
 
     private sealed class LoopWatch
     {
@@ -91,15 +96,21 @@ public partial class MainWindow
             }
             watch.StuckSince ??= now;
             if (now - watch.StuckSince < stuck.Grace || watch.NextRerunAt is { } next && now < next) continue;
-            watch.NextRerunAt = now + LoopRerunBackoff[Math.Min(watch.Reruns, LoopRerunBackoff.Length - 1)];
+            bool freshSession = stuck.Kind == LoopStall.Failed;
+            TimeSpan[] backoff = freshSession ? LoopFailedBackoff : LoopRerunBackoff;
+            watch.NextRerunAt = now + backoff[Math.Min(watch.Reruns, backoff.Length - 1)];
             watch.Reruns++;
             watch.StuckSince = null;
-            // A hung OpenCode server, or a rerun that already failed once, gets a fresh terminal.
-            bool replaceTerminal = stuck.Kind == LoopStall.Unknown || watch.LastRerunFailed;
+            // A hung OpenCode server, a failed conversation, or a rerun that already failed once gets a fresh terminal;
+            // the failed conversation also a new session.
+            bool replaceTerminal = stuck.Kind is LoopStall.Unknown or LoopStall.Failed || watch.LastRerunFailed;
             RecordAutomationDiagnostic("loop_watchdog_rerun", $"Loop stopped without progress ({stuck.Kind}); rerun {watch.Reruns}" +
-                (replaceTerminal ? " in a new terminal" : ""), projectDirectory: project, deduplicate: false);
-            SetProgressStatus($"Loop · {ProjectDisplayName(project)} · 멈춘 작업을 " + (replaceTerminal ? "새 터미널에서 " : "") + "다시 실행합니다");
-            TrackJournalWork(LoopWatchdogRerunAsync(project, watch, replaceTerminal));
+                (freshSession ? " in a new terminal and a new session" : replaceTerminal ? " in a new terminal" : ""),
+                projectDirectory: project, deduplicate: false);
+            SetProgressStatus($"Loop · {ProjectDisplayName(project)} · " + (freshSession
+                ? "오류로 멈춘 작업을 새 세션에서 다시 실행합니다"
+                : "멈춘 작업을 " + (replaceTerminal ? "새 터미널에서 " : "") + "다시 실행합니다"));
+            TrackJournalWork(LoopWatchdogRerunAsync(project, watch, replaceTerminal, freshSession));
         }
         SaveLoopResume(now);
     }
@@ -128,8 +139,12 @@ public partial class MainWindow
         if (pane.IsPlanMakerActive || pane.IsWaitingForResources || pane.IsAutoResumeResourceWaiting) return null;
         var input = pane.NativeAutomationDiagnostic;
         if (input.HasPendingInput || input.ManualOverride) return null;
-        // Credentials, permissions, billing or a malformed request: only a person can fix it (2026-10-20 지시).
-        if (pane.AutoResumeWaitsForPerson) return null;
+        // A failure a retry of the same request cannot mend (credentials, billing, request shape, a broken conversation) no
+        // longer waits for a person: after a few minutes the task starts over in a new session (사용자: 다른걸 실행하게 하지말고
+        // 스스로 고치도록, replacing the 2026-10-20 지시 to wait). A person's own stop or refusal is still left alone.
+        if (pane.AutoResumeWaitsForPerson) return pane.AutoResumeFailedNeedingPerson ? (LoopStall.Failed, LoopFailedGrace) : null;
+        // The model server named a wait: this terminal is waiting it out, not stopped.
+        if (pane.AutoResumeServerWaitUntil is not null) return null;
         bool owned = pane.IsContinuousImprovementActive, paused = pane.IsAutoResumePaused;
         return pane.NativeOpenCodeStatus switch
         {
@@ -147,7 +162,7 @@ public partial class MainWindow
         $"{pane.NativeOpenCodeStatus}|{pane.AutoResumeLastProgressAt?.UtcTicks}|{pane.NativeSubmissionGeneration}|" +
         $"{pane.IsContinuousImprovementActive}|{pane.IsAutoResumePaused}";
 
-    private async Task LoopWatchdogRerunAsync(string project, LoopWatch watch, bool replaceTerminal)
+    private async Task LoopWatchdogRerunAsync(string project, LoopWatch watch, bool replaceTerminal, bool freshSession = false)
     {
         watch.Rerunning = true;
         var runtime = RuntimeFor(project);
@@ -161,7 +176,12 @@ public partial class MainWindow
                 DetachTaskTerminal(tab);
                 TerminalTabs.Items.Remove(tab);
                 try { await state.Pane.StopForTerminalLifecycleAsync(); }
-                finally { DisposeSafely(state.Pane); }
+                finally
+                {
+                    // The failed conversation stays in OpenCode's history; the new terminal does not restore it.
+                    if (freshSession) state.Pane.ForgetSavedNativeSession();
+                    DisposeSafely(state.Pane);
+                }
                 if (slot >= 0) AssignProjectToSlot(project, slot);
                 UpdateTerminalCount();
             }

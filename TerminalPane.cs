@@ -3908,6 +3908,19 @@ public sealed partial class TerminalPane
     internal bool IsAutoResumePaused => _autoResume?.IsRecoveryPaused == true;
     internal DateTimeOffset? AutoResumeLastProgressAt => _autoResume?.LastSubstantiveProgressAt;
     internal bool AutoResumeWaitsForPerson => _autoResume?.WaitsForPersonAfterError == true;
+    // The request failed and no person stopped or refused it: Loop may start the task over in a new session.
+    internal bool AutoResumeFailedNeedingPerson => _autoResume?.FailedNeedingPerson == true;
+
+    // The next terminal in this slot starts a new OpenCode session instead of restoring this one (Loop's own fix for a
+    // conversation that keeps failing: overflowing, broken history, a rejected request).
+    internal void ForgetSavedNativeSession()
+    {
+        if (_nativePaneKey is null) return;
+        try { File.Delete(NativeSessionMapPath()); }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException) { }
+    }
+    // This terminal holds its next request for the wait the model server named (per terminal only).
+    internal DateTimeOffset? AutoResumeServerWaitUntil => _autoResume?.ServerWaitUntil;
 
     internal const string LoopDecideYourselfAnswer =
         "지금 답할 사람이 없습니다. 되돌릴 수 있는 결정은 플랜에 맞고 가장 안전한 쪽으로 정해 진행하고, 정한 내용과 가정은 보고에 남기세요.";

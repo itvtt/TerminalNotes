@@ -36,6 +36,50 @@ internal static partial class Program
         Require(restarts == 1, "A single retry stall requested duplicate process replacements.");
     }
 
+    // The server asks for 60-120 seconds but OpenCode would retry in 30: this terminal stops that retry, waits the
+    // server's time, then continues. Another terminal is not held.
+    private static async Task ServerNamedWaitHoldsOnlyThisTerminalAsync()
+    {
+        using var fixture = new Fixture("server-wait");
+        using var other = new Fixture("server-wait-other");
+        await fixture.BindAsync();
+        await other.BindAsync();
+        fixture.Api.SetStatus(OpenCodeRecoveryStatus.Busy);
+        await fixture.Controller.TickAsync();
+        fixture.Api.SetStatus(OpenCodeRecoveryStatus.Retry);
+        fixture.Api.RetryMessage = "요청이 많습니다. 60-120초 후 다시 시도하세요.";
+        fixture.Api.RetryNext = fixture.Clock.GetUtcNow().AddSeconds(30).ToUnixTimeMilliseconds();
+        DateTimeOffset limitedAt = fixture.Clock.GetUtcNow();
+        for (int tick = 0; tick < 4 && fixture.Api.AbortPosts.Count == 0; tick++)
+        {
+            fixture.Clock.Advance(TimeSpan.FromSeconds(2));
+            await fixture.Controller.TickAsync();
+        }
+        await WaitForPostAsync(fixture.Api, abort: true);
+        Require(fixture.Api.AbortPosts.Count == 1, "A native retry earlier than the server's wait was not stopped.");
+        Require(fixture.Controller.ServerWaitUntil is { } until && until >= limitedAt.AddSeconds(120) && until <= limitedAt.AddSeconds(140),
+            "The terminal did not hold for the upper end of the server's 60-120 seconds.");
+        Require(other.Controller.ServerWaitUntil is null, "Another terminal was held by this terminal's limit.");
+
+        fixture.Api.SetStatus(OpenCodeRecoveryStatus.Idle);
+        fixture.Api.RetryNext = null;
+        while (fixture.Clock.GetUtcNow() < limitedAt.AddSeconds(115))
+        {
+            fixture.Clock.Advance(TimeSpan.FromSeconds(10));
+            await fixture.Controller.TickAsync();
+        }
+        Require(fixture.Api.ContinuePosts.Count == 0 && fixture.Controller.Status.Contains("서버 요청 제한"),
+            "The terminal sent a request before the server's wait or did not show it was waiting.");
+        for (int tick = 0; tick < 12 && fixture.Api.ContinuePosts.Count == 0; tick++)
+        {
+            fixture.Clock.Advance(TimeSpan.FromSeconds(5));
+            await fixture.Controller.TickAsync();
+        }
+        await WaitForPostAsync(fixture.Api);
+        Require(fixture.Api.ContinuePosts.Count == 1 && fixture.Api.AbortPosts.Count == 1 && fixture.Controller.ServerWaitUntil is null,
+            "The terminal did not continue once after the server's wait.");
+    }
+
     private static async Task NativeRetryActivityAndBlockersAsync()
     {
         using var fixture = new Fixture("native-retry-activity");

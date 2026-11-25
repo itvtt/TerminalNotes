@@ -4865,7 +4865,6 @@ public static class ExternalTerminalLauncher
             $cmdSessionArgs = @('--hostname', '127.0.0.1', '--port', [string]$cmdSession.Port, '--session', $cmdSession.Session)
             if ($cmdSession.AutoMode) { $cmdSessionArgs += '--auto' }
             Write-Host 'CMD에서 기존 대화를 이어갑니다. TerminalNotes를 종료해도 이 창은 유지됩니다.'
-            Write-Host '다음 요청은 이 창에 입력하세요. 지휘/검토/구현 자동 순환은 앱에서 중단되었습니다.'
             [System.IO.File]::WriteAllText((Join-Path $PSScriptRoot 'started'), 'started')
             & $cmdSession.Command @cmdSessionArgs
             if ($LASTEXITCODE -ne 0) { throw ('OpenCode exit code: ' + $LASTEXITCODE) }
@@ -7618,6 +7617,28 @@ public sealed class OpenCodeAutoResumeController : IDisposable
     private Task<(bool Valid, string? Hash)>? _submittedPlanRead;
     private string? _restartSubmittedPrompt, _restartOriginalInstruction;
     private bool _confirmedPendingReceipt;
+    // The server named a wait ("60-120초 후 다시"): this terminal alone holds its next request until then.
+    private DateTimeOffset? _serverWaitUntil;
+    private string? _serverWaitOccurrence;
+
+    public DateTimeOffset? ServerWaitUntil { get { lock (_gate) return ActiveServerWaitLocked(); } }
+
+    private DateTimeOffset? ActiveServerWaitLocked() => _serverWaitUntil is { } until && until > _time.GetUtcNow() ? until : null;
+
+    // nativeRetry: OpenCode is retrying by itself, so a rate limit that names no time still gets a short wait.
+    private void NoteServerWaitLocked(string? message, string? occurrence, bool nativeRetry = false)
+    {
+        if (occurrence is null || occurrence == _serverWaitOccurrence) return;
+        TimeSpan? wait = OpenCodeFailureClassifier.ServerRequestedWait(message) ??
+            (nativeRetry && OpenCodeFailureClassifier.LooksLikeRateLimit(message) ? OpenCodeFailureClassifier.UnnamedRateLimitWait : null);
+        if (wait is not { } named) return;
+        _serverWaitOccurrence = occurrence;
+        DateTimeOffset now = _time.GetUtcNow();
+        DateTimeOffset until = now + OpenCodeFailureClassifier.ServerWaitHold(named);
+        if (_serverWaitUntil is null || until > _serverWaitUntil) _serverWaitUntil = until;
+        EmitDiagnosticLocked("server_wait", "retry",
+            $"The server named a {named.TotalSeconds:0}s wait; this terminal holds its next request for {(until - now).TotalSeconds:0}s.");
+    }
 
     public bool CanRetryError { get { lock (_gate) return CanRetryErrorLocked(); } }
     public DateTimeOffset? ErrorRetryAt { get { lock (_gate) return _errorRetryAt; } }
@@ -8168,6 +8189,10 @@ public sealed class OpenCodeAutoResumeController : IDisposable
                     }
                 }
                 _lastVerifiedEvidence = evidence;
+                if (evidence.Status == OpenCodeRecoveryStatus.Retry)
+                    NoteServerWaitLocked(evidence.RetryMessage, evidence.LatestUserMessageId, nativeRetry: true);
+                else if (evidence.HasErrorMarker)
+                    NoteServerWaitLocked(string.Join("\n", evidence.CurrentErrors.Select(error => error.Message)), evidence.LatestUserMessageId);
                 if (_stalledAbortAttemptedAt is not null &&
                     (evidence.ActivityFingerprint != _stalledAbortActivity || evidence.ProgressFingerprint != _stalledAbortProgress ||
                      evidence.Status == OpenCodeRecoveryStatus.Retry && EffectiveRetryAtLocked(evidence) is { } retryDeadline && _time.GetUtcNow() < retryDeadline))
@@ -8246,6 +8271,9 @@ public sealed class OpenCodeAutoResumeController : IDisposable
                 }
                 else if (evidence.HasErrorMarker && CanRetryErrorLocked())
                     SetStatusLocked(OpenCodeFailureClassifier.DisplayReason(evidence) + (RecoveryActiveLocked ? "" : " · 자동 진행 꺼짐"));
+                if (RecoveryActiveLocked && ActiveServerWaitLocked() is { } holdUntil && decision.Action == RecoveryAction.None &&
+                    evidence.Status != OpenCodeRecoveryStatus.Busy && (_nextCompletedReviewAt is not { } review || holdUntil >= review))
+                    SetStatusLocked($"서버 요청 제한 · {Math.Max(1, (int)Math.Ceiling((holdUntil - _time.GetUtcNow()).TotalSeconds))}초 후 이어서");
                 if (_lastHealthDiagnosticAt is not { } lastHealth || _time.GetUtcNow() - lastHealth >= TimeSpan.FromMinutes(5))
                 {
                     _lastHealthDiagnosticAt = _time.GetUtcNow();
@@ -8274,6 +8302,7 @@ public sealed class OpenCodeAutoResumeController : IDisposable
                 string? messageId = null;
                 Task? actionTask = null;
                 string? stalledLaunchToolFingerprint = null;
+                bool stopNativeRetry = false;
                 lock (_gate)
                 {
                     if (!IsCurrentLocked(epoch) || !OwnsSessionLocked(session) || !fresh.IsAvailable || fresh.Evidence is not { } evidence ||
@@ -8313,6 +8342,7 @@ public sealed class OpenCodeAutoResumeController : IDisposable
                     }
                     else
                     {
+                        stopNativeRetry = decision.Reason == OpenCodeRecoveryPolicy.ServerWaitAbortReason;
                         _abortActionInFlight = true;
                         _stalledAbortAttemptedAt = _time.GetUtcNow();
                         _stalledAbortActivity = evidence.ActivityFingerprint;
@@ -8326,11 +8356,11 @@ public sealed class OpenCodeAutoResumeController : IDisposable
                             allowUntrackedWork: HasUntrackedRequestLocked(evidence), expectedActivityFingerprint: evidence.ActivityFingerprint,
                             expectedStalledLaunchToolFingerprint: stalledLaunchToolFingerprint, retryClock: _time.GetUtcNow,
                             expectedRetryEvidence: string.Join("|", evidence.CurrentErrors.Select(error => error.RetryEvidenceId)),
-                            providerRetryAt: EffectiveRetryAtLocked(evidence));
+                            providerRetryAt: stopNativeRetry ? null : EffectiveRetryAtLocked(evidence), stopNativeRetry: stopNativeRetry);
                     }
                     SetStatusLocked(decision.Action == RecoveryAction.Continue
                         ? CanReviewCompletedLocked(evidence) ? "Loop · 결과 검토 및 다음 개선 진행" : "미완료 작업 자동 재개"
-                        : "정체 복구 · 중단 확인 중");
+                        : stopNativeRetry ? "서버 요청 제한 · OpenCode 재시도를 멈추고 기다립니다" : "정체 복구 · 중단 확인 중");
                 }
                 RecoveryActionResult outcome;
                 string? actionExceptionType = null;
@@ -8569,7 +8599,11 @@ public sealed class OpenCodeAutoResumeController : IDisposable
             lock (_gate)
             {
                 if (!OwnsRecommendedPlanLocked(epoch, session, message, path)) return false;
+                NoteServerWaitLocked(exception.Message, "plan|" + message + "|" + _recommendedPlanFailures);
                 RecommendedPlanFailedLocked(message, "Recommended planning failed (" + exception.GetType().Name + ").");
+                // A planner the server limited tries again only after the wait it named.
+                if (!_recommendedPlanFallback && ActiveServerWaitLocked() is { } planHold &&
+                    (_recommendedPlanRetryAt is not { } planRetry || planHold > planRetry)) _recommendedPlanRetryAt = planHold;
                 return _recommendedPlanFallback;
             }
         }
@@ -8935,17 +8969,24 @@ public sealed class OpenCodeAutoResumeController : IDisposable
         ContinuousOptionEnabledLocked ? OpenCodeFailureClassifier.CanRetryInLoop(evidence) :
         OpenCodeFailureClassifier.CanRetryAutomatically(evidence);
 
-    // The current request failed in a way only a person can fix (credentials, permissions, billing, request shape).
-    public bool WaitsForPersonAfterError
+    // The current request failed in a way a retry of the same request cannot mend (credentials, permissions, billing,
+    // request shape), or a person stopped or refused it.
+    public bool WaitsForPersonAfterError { get { lock (_gate) return WaitsForPersonLocked(); } }
+
+    // ... and no person stopped or refused it: Loop starts the task over in a new session by itself instead of waiting.
+    public bool FailedNeedingPerson
     {
         get
         {
             lock (_gate)
-                return _lastVerifiedEvidence is { HasErrorMarker: true } evidence && evidence.LatestUserMessageId == _expectedUserMessageId &&
-                    !CanAutoRetryLocked(evidence) && !OpenCodeFailureClassifier.CanCompact(evidence) &&
-                    !(_abortAccepted && OpenCodeRecoveryClient.IsExpectedAbortError(evidence, _abortedLaunchToolFingerprint));
+                return WaitsForPersonLocked() && _lastVerifiedEvidence is { } evidence && !OpenCodeFailureClassifier.WasStoppedByPerson(evidence);
         }
     }
+
+    private bool WaitsForPersonLocked() =>
+        _lastVerifiedEvidence is { HasErrorMarker: true } evidence && evidence.LatestUserMessageId == _expectedUserMessageId &&
+        !CanAutoRetryLocked(evidence) && !OpenCodeFailureClassifier.CanCompact(evidence) &&
+        !(_abortAccepted && OpenCodeRecoveryClient.IsExpectedAbortError(evidence, _abortedLaunchToolFingerprint));
 
     private RecoveryObservation ToObservation(RecoverySessionEvidence evidence, bool validPlan) =>
         new(evidence.SessionId, _epoch, _userWork, _binding, _requestId,
@@ -8968,6 +9009,7 @@ public sealed class OpenCodeAutoResumeController : IDisposable
                 (CanAutoRetryLocked(evidence) || OpenCodeFailureClassifier.CanCompact(evidence)),
             ManualErrorRecovery = _manualErrorRetryRequested,
             ErrorRetryAt = _errorRetryAt, ProviderRetryAt = _providerRetryAt, NativeRetryAt = EffectiveRetryAtLocked(evidence),
+            ServerWaitUntil = ActiveServerWaitLocked(),
             HasConfirmedErrorResponse = evidence.LatestUserMessageId == _expectedUserMessageId && (evidence.HasConfirmedErrorResponse || _contextContinuation),
             HasConfirmedContinuationReceipt = _confirmedPendingReceipt,
             HasSuccessfulFinalResponse = evidence.LatestUserMessageId == _expectedUserMessageId && evidence.HasSuccessfulFinalResponse,
@@ -10178,6 +10220,11 @@ public static class OpenCodeFailureClassifier
         !string.IsNullOrWhiteSpace(error.Message) &&
             NeedsPersonMarkers.Any(marker => error.Message.Contains(marker, StringComparison.OrdinalIgnoreCase));
 
+    // A person stopped the request (Esc, ■) or refused what it asked (a permission, a question): never redone for them.
+    public static bool WasStoppedByPerson(RecoverySessionEvidence evidence) =>
+        evidence.CurrentErrors.Any(error =>
+            error.Type is "MessageAbortedError" or "ToolExecutionAborted" or "PermissionDeniedError" or "QuestionRejectedError");
+
     public static bool IsContextOverflow(RecoveryErrorEvidence error) =>
         error.StatusCode is not (401 or 403) &&
         (error.Type == "ContextOverflowError" || error.HasVerifiedContextOverflow);
@@ -10231,6 +10278,96 @@ public static class OpenCodeFailureClassifier
     }
 
     public static TimeSpan RetryDelay(int attempt) => TimeSpan.FromMinutes(attempt switch { <= 1 => 1, 2 => 3, _ => 10 });
+
+    // ── A wait the server names only in words ("60-120초 후 다시 시도", "retry after 120 seconds") ──
+    // OpenCode follows only Retry-After headers. Without one it retries every 30 seconds at most, which a model server
+    // that asks for 60-120 seconds keeps refusing (공용 모델 서버의 요청 제한, 2026-11-24). A terminal that reads such a wait holds
+    // its own next request that long; other terminals are not affected (사용자: 다른 터미널에 영향가게 하지말고).
+    private static readonly string[] RateLimitMarkers =
+    [
+        "rate limit", "ratelimit", "rate_limit", "too many requests", "throttl", "429", "overload", "capacity", "busy",
+        "요청이 많", "요청량", "요청 제한", "요청 한도", "사용자가 많", "사용량이 많", "혼잡", "과부하", "제한"
+    ];
+
+    private static readonly global::System.Text.RegularExpressions.Regex NamedWait = new(
+        @"(\d{1,5}(?:\.\d{1,3})?)\s*(ms|milliseconds?|초|secs?|seconds?|s|분|mins?|minutes?|시간|hours?|hrs?)(?![a-z])",
+        global::System.Text.RegularExpressions.RegexOptions.IgnoreCase | global::System.Text.RegularExpressions.RegexOptions.CultureInvariant,
+        TimeSpan.FromMilliseconds(100));
+
+    public static readonly TimeSpan LongestNamedWait = TimeSpan.FromHours(1);
+    private static readonly TimeSpan ServerWaitMargin = TimeSpan.FromSeconds(5);
+
+    // A rate-limit retry that names no time still waits a minute rather than OpenCode's 2-30 seconds.
+    public static readonly TimeSpan UnnamedRateLimitWait = TimeSpan.FromMinutes(1);
+
+    public static bool LooksLikeRateLimit(string? message) =>
+        !string.IsNullOrWhiteSpace(message) && message.Length <= 4000 &&
+        !NeedsPersonMarkers.Any(marker => message.Contains(marker, StringComparison.OrdinalIgnoreCase)) &&
+        RateLimitMarkers.Any(marker => message.Contains(marker, StringComparison.OrdinalIgnoreCase));
+
+    // A time counts as the wait only next to retry wording: "120초 후", "60초 뒤", "대기 시간: 90초", "retry in 20 seconds",
+    // "try again after 2 minutes". Quota windows ("시간당 100회", "100 requests per 1 hour", "24시간 한도") are not a wait;
+    // reading them as one held a terminal for an hour after every limited request.
+    private static readonly global::System.Text.RegularExpressions.Regex WaitWordAfter = new(
+        @"^\s*[)\]]?\s*(?:후|뒤|이후|대기|기다|later\b)",
+        global::System.Text.RegularExpressions.RegexOptions.IgnoreCase | global::System.Text.RegularExpressions.RegexOptions.CultureInvariant,
+        TimeSpan.FromMilliseconds(100));
+
+    private static readonly global::System.Text.RegularExpressions.Regex WaitWordBefore = new(
+        @"(?:\b(?:in|after|wait|waiting|retry|retrying|again|cooldown)\b|retry[-_]after|대기|기다)[^.!?\n。]{0,14}$",
+        global::System.Text.RegularExpressions.RegexOptions.IgnoreCase | global::System.Text.RegularExpressions.RegexOptions.CultureInvariant,
+        TimeSpan.FromMilliseconds(100));
+
+    /// <summary>The longest retry wait a rate-limit message names (the upper end of "60-120초 후"), or null when it names none.</summary>
+    public static TimeSpan? ServerRequestedWait(string? message)
+    {
+        if (!LooksLikeRateLimit(message)) return null;
+        TimeSpan? longest = null;
+        try
+        {
+            foreach (global::System.Text.RegularExpressions.Match match in NamedWait.Matches(message!))
+            {
+                int end = match.Index + match.Length, start = Math.Max(0, match.Index - 24);
+                if (!WaitWordAfter.IsMatch(message!.Substring(end, Math.Min(12, message.Length - end))) &&
+                    !WaitWordBefore.IsMatch(message.Substring(start, match.Index - start))) continue;
+                if (!double.TryParse(match.Groups[1].Value, global::System.Globalization.NumberStyles.AllowDecimalPoint,
+                        global::System.Globalization.CultureInfo.InvariantCulture, out double amount) || amount <= 0) continue;
+                double seconds = match.Groups[2].Value.ToLowerInvariant() switch
+                {
+                    "ms" or "millisecond" or "milliseconds" => amount / 1000,
+                    "분" or "min" or "mins" or "minute" or "minutes" => amount * 60,
+                    "시간" or "hour" or "hours" or "hr" or "hrs" => amount * 3600,
+                    _ => amount
+                };
+                TimeSpan wait = TimeSpan.FromSeconds(Math.Min(seconds, LongestNamedWait.TotalSeconds));
+                if (longest is null || wait > longest) longest = wait;
+            }
+        }
+        catch (global::System.Text.RegularExpressions.RegexMatchTimeoutException) { return null; }
+        return longest;
+    }
+
+    /// <summary>How long one terminal holds its next request after the server named <paramref name="named"/>: exactly that
+    /// time and a small margin. It never grows on repeats: growing daytime holds (×2, ×4 up to 15 minutes) left Loop
+    /// waiting most of each step while the server would already have taken the request.</summary>
+    public static TimeSpan ServerWaitHold(TimeSpan named) => named + ServerWaitMargin;
+
+    // A provider that reports an overflowing context only in words (an OpenAI-compatible server answering 400 "This
+    // model's maximum context length is 32768 tokens …", llama.cpp/Ollama "exceeds the context size"): compact and
+    // continue like a structured overflow. Before, Loop took it for a problem only a person can fix and stopped for good.
+    private static readonly global::System.Text.RegularExpressions.Regex ContextOverflowText = new(
+        @"maximum context length|context[ _-]length[ _-]exceeded|exceed(?:s|ed)? (?:the )?(?:\w+ )?context(?:[ _-](?:length|window|size|limit))|" +
+        @"context (?:window|length|size) (?:is |was |has been )?exceeded|prompt is too long|input is too long|" +
+        @"reduce the length of the (?:messages|prompt|input)|컨텍스트\s*(?:길이|한도|창|크기|윈도우)?[^.\n]{0,12}(?:초과|넘었|넘습|넘어)",
+        global::System.Text.RegularExpressions.RegexOptions.IgnoreCase | global::System.Text.RegularExpressions.RegexOptions.CultureInvariant,
+        TimeSpan.FromMilliseconds(100));
+
+    public static bool LooksLikeContextOverflow(string? message)
+    {
+        if (string.IsNullOrWhiteSpace(message) || message.Length > 8000) return false;
+        try { return ContextOverflowText.IsMatch(message); }
+        catch (global::System.Text.RegularExpressions.RegexMatchTimeoutException) { return false; }
+    }
 
     public static DateTimeOffset RetryAt(RecoverySessionEvidence evidence, DateTimeOffset now, int attempt)
     {
@@ -12119,7 +12256,8 @@ public sealed class OpenCodeRecoveryClient : IDisposable
         string? expectedStalledLaunchToolFingerprint = null,
         Func<DateTimeOffset>? retryClock = null,
         string? expectedRetryEvidence = null,
-        DateTimeOffset? providerRetryAt = null)
+        DateTimeOffset? providerRetryAt = null,
+        bool stopNativeRetry = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -12138,7 +12276,7 @@ public sealed class OpenCodeRecoveryClient : IDisposable
             expectedTodoFingerprint is not null && !StringEquals(evidence.TodoFingerprint, expectedTodoFingerprint) ||
             expectedActivityFingerprint is not null && !StringEquals(evidence.ActivityFingerprint, expectedActivityFingerprint))
             return ActionResult(OpenCodeRecoveryOutcome.Rejected, "progress_changed", "Native progress or current-turn activity changed after the recovery decision.");
-        if (!IsAbortable(evidence, CanAllowUntrackedWork(evidence, allowUntrackedWork, expectedUserMessageId), expectedStalledLaunchToolFingerprint, (retryClock ?? (() => DateTimeOffset.UtcNow))()))
+        if (!IsAbortable(evidence, CanAllowUntrackedWork(evidence, allowUntrackedWork, expectedUserMessageId), expectedStalledLaunchToolFingerprint, (retryClock ?? (() => DateTimeOffset.UtcNow))(), stopNativeRetry))
             return ActionResult(OpenCodeRecoveryOutcome.Rejected, "session_not_abortable", "The exact session is not a stalled busy turn with incomplete work and no active tool, descendant, error, or input blocker.");
 
         // Re-read immediately before abort so newly observed activity disarms it.
@@ -12156,7 +12294,7 @@ public sealed class OpenCodeRecoveryClient : IDisposable
             expectedTodoFingerprint is not null && !StringEquals(finalEvidence.TodoFingerprint, expectedTodoFingerprint) ||
             expectedActivityFingerprint is not null && !StringEquals(finalEvidence.ActivityFingerprint, expectedActivityFingerprint))
             return ActionResult(OpenCodeRecoveryOutcome.Rejected, "progress_changed", "Native progress or current-turn activity changed before abort.");
-        if (!IsAbortable(finalEvidence, CanAllowUntrackedWork(finalEvidence, allowUntrackedWork, expectedUserMessageId), expectedStalledLaunchToolFingerprint, (retryClock ?? (() => DateTimeOffset.UtcNow))()))
+        if (!IsAbortable(finalEvidence, CanAllowUntrackedWork(finalEvidence, allowUntrackedWork, expectedUserMessageId), expectedStalledLaunchToolFingerprint, (retryClock ?? (() => DateTimeOffset.UtcNow))(), stopNativeRetry))
             return ActionResult(OpenCodeRecoveryOutcome.Rejected, "session_not_abortable", "The exact session is no longer a stalled busy turn with no active blocker.");
 
         using var request = new HttpRequestMessage(HttpMethod.Post, BuildSessionEndpoint(sessionId, "/abort"));
@@ -12214,9 +12352,11 @@ public sealed class OpenCodeRecoveryClient : IDisposable
         StringEquals(evidence.LatestUserMessageId, expectedUserMessageId) &&
         (evidence.TotalTodoCount == 0 || evidence.AllTodosCompleted) && evidence.HasSuccessfulFinalResponse;
 
-    private static bool IsAbortable(RecoverySessionEvidence evidence, bool allowUntrackedWork, string? expectedLaunchToolFingerprint, DateTimeOffset now) =>
+    // stopNativeRetry: the server named a longer wait than OpenCode's own retry, so its scheduled retry may be stopped.
+    private static bool IsAbortable(RecoverySessionEvidence evidence, bool allowUntrackedWork, string? expectedLaunchToolFingerprint, DateTimeOffset now,
+        bool stopNativeRetry = false) =>
         (evidence.Status == OpenCodeRecoveryStatus.Busy || evidence.Status == OpenCodeRecoveryStatus.Retry &&
-            (evidence.NativeRetryAt is not { } retryAt || now >= retryAt)) && (evidence.IncompleteTodoCount > 0 || allowUntrackedWork) &&
+            (stopNativeRetry || evidence.NativeRetryAt is not { } retryAt || now >= retryAt)) && (evidence.IncompleteTodoCount > 0 || allowUntrackedWork) &&
         !evidence.HasPendingPermission && !evidence.HasPendingQuestion &&
         !evidence.HasPendingPermissionInDescendants && !evidence.HasPendingQuestionInDescendants &&
         (!evidence.HasRunningTools || expectedLaunchToolFingerprint is not null &&
@@ -12598,9 +12738,10 @@ public sealed class OpenCodeRecoveryClient : IDisposable
                 JsonElement errorData = GetProperty(GetProperty(info, "error"), "data");
                 JsonElement retryable = GetProperty(errorData, "isRetryable");
                 var retryTiming = ParseProviderRetryTiming(GetProperty(errorData, "responseHeaders"));
+                string? rowErrorMessage = ErrorMessageText(GetProperty(info, "error"), errorData);
                 rowErrors.Add(new RecoveryErrorEvidence(messageErrorType, null)
                 {
-                    HasVerifiedContextOverflow = HasStructuredContextOverflow(errorData),
+                    HasVerifiedContextOverflow = HasStructuredContextOverflow(errorData) || OpenCodeFailureClassifier.LooksLikeContextOverflow(rowErrorMessage),
                     StatusCode = GetInt32(errorData, "statusCode"),
                     IsRetryable = retryable.ValueKind is JsonValueKind.True or JsonValueKind.False ? retryable.GetBoolean() : null,
                     ParentUserMessageId = GetString(info, "parentID"),
@@ -12608,7 +12749,7 @@ public sealed class OpenCodeRecoveryClient : IDisposable
                     RetryAfterDelay = retryTiming.Delay,
                     RetryEvidenceId = id + ":" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
                         errorData.ValueKind == JsonValueKind.Undefined ? string.Empty : errorData.GetRawText()))),
-                    Message = ErrorMessageText(GetProperty(info, "error"), errorData)
+                    Message = rowErrorMessage
                 });
             }
 
@@ -13345,6 +13486,13 @@ public sealed class OpenCodeRecoveryPolicy
             if (observation.RunningToolCount > 0 && observation.StalledLaunchToolFingerprint is null)
                 return RecoveryDecision.None("An OpenCode tool is still running.", RecoveryPhase.Busy);
 
+            if (RetriesBeforeServerWait(observation, now) && HasKnownUnfinishedWork(observation))
+            {
+                if (state.NextEligibleAt is DateTimeOffset retryStopEligibleAt && now < retryStopEligibleAt)
+                    return RecoveryDecision.None("Recovery is waiting for its escalating retry delay.", RecoveryPhase.RetryDelay, retryStopEligibleAt);
+                return CreateDecision(state, observation, RecoveryAction.Abort, ServerWaitAbortReason, RecoveryPhase.RetryDelay);
+            }
+
             if (state.NoProgressSince is not DateTimeOffset noProgressSince)
                 return RecoveryDecision.None("Waiting for a stable native busy interval.", RecoveryPhase.Busy);
 
@@ -13372,6 +13520,8 @@ public sealed class OpenCodeRecoveryPolicy
 
         if (observation.Status == OpenCodeRecoveryExecutionState.Idle)
         {
+            if (observation.ServerWaitUntil is { } serverWait && now < serverWait)
+                return RecoveryDecision.None("The server named a wait before this terminal's next request.", RecoveryPhase.RetryDelay, serverWait);
             if (observation.HasError && observation.ErrorRecoveryAllowed)
             {
                 if (observation.ProviderRetryAt is { } providerRetry && now < providerRetry)
@@ -13734,6 +13884,13 @@ public sealed class OpenCodeRecoveryPolicy
     private static bool HasCurrentRequest(RecoveryObservation observation) =>
         !string.IsNullOrWhiteSpace(observation.RequestId);
 
+    public const string ServerWaitAbortReason = "OpenCode would retry before the wait the server named; this terminal stops and waits instead.";
+
+    // OpenCode's own retry comes before the time the server asked for, so it would only be refused again.
+    private static bool RetriesBeforeServerWait(RecoveryObservation observation, DateTimeOffset now) =>
+        observation.Status == OpenCodeRecoveryExecutionState.Retry && observation.ServerWaitUntil is { } wait && now < wait &&
+        observation.NativeRetryAt is { } next && next < wait - TimeSpan.FromSeconds(5);
+
     private static bool HasKnownUnfinishedWork(RecoveryObservation observation) =>
         observation.HasKnownTodoList && observation.UnfinishedTodoCount > 0 || observation.HasCurrentUnfinishedRequest || observation.HasCompletedReviewRequested;
 
@@ -13749,7 +13906,8 @@ public sealed class OpenCodeRecoveryPolicy
         observation.Status == OpenCodeRecoveryExecutionState.Unknown ||
         observation.Status is OpenCodeRecoveryExecutionState.Busy or OpenCodeRecoveryExecutionState.Retry &&
             observation.ProviderRetryAt is { } providerRetry && now < providerRetry ||
-        observation.Status == OpenCodeRecoveryExecutionState.Retry && observation.NativeRetryAt is { } retryAt && now < retryAt ||
+        observation.Status == OpenCodeRecoveryExecutionState.Retry && observation.NativeRetryAt is { } retryAt && now < retryAt &&
+            !RetriesBeforeServerWait(observation, now) ||
         observation.HasPendingApprovalOrQuestion ||
         observation.HasError && !observation.ErrorRecoveryAllowed ||
         !observation.IsMarkdownValid;
@@ -13931,6 +14089,9 @@ public sealed record RecoveryObservation(
     public DateTimeOffset? ErrorRetryAt { get; init; }
     public DateTimeOffset? ProviderRetryAt { get; init; }
     public DateTimeOffset? NativeRetryAt { get; init; }
+    // This terminal's own hold after the server named a wait ("60-120초 후 다시"): no request before it, and a native
+    // retry scheduled earlier is stopped so the terminal waits instead of being refused again.
+    public DateTimeOffset? ServerWaitUntil { get; init; }
     public bool HasConfirmedErrorResponse { get; init; }
     public bool HasConfirmedContinuationReceipt { get; init; }
 }

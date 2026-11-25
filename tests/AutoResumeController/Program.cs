@@ -68,6 +68,7 @@ internal static partial class Program
             await SameProjectRecoveryActionsRemainSerializedAsync();
             await NativeRetryDeadlineAndStallRecoveryAsync();
             await NativeRetryActivityAndBlockersAsync();
+            await ServerNamedWaitHoldsOnlyThisTerminalAsync();
             await DeferredStalledRestartKeepsRetryingAsync();
             await StructuredRateLimitSchedulingAsync();
             await RetryAndCompletedLoopExitSnapshotsAsync();
